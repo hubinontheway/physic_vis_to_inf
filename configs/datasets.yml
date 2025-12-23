@@ -1,0 +1,4 @@
+datasets:
+  VEDIA: /data2/hubin/datasets/VEDIA
+  AVIID: /data2/hubin/datasets/AVIID
+  M3FD_Detection: /data2/hubin/datasets/M3FD_Detection
