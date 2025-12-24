@@ -47,13 +47,8 @@ def load_yaml(path):
     return yaml.safe_load(text)
 
 
-def load_dataset_paths(path):
+def load_train_config(path):
     data = load_yaml(path)
-    if not isinstance(data, dict) or "datasets" not in data:
-        raise ValueError("Config must contain a 'datasets' mapping")
-
-    datasets = data["datasets"]
-    if not isinstance(datasets, dict):
-        raise ValueError("'datasets' must be a mapping of name to path")
-
-    return datasets
+    if not isinstance(data, dict):
+        raise ValueError("Train config must be a mapping")
+    return data

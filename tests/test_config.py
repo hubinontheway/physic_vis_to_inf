@@ -2,8 +2,8 @@ import os
 import tempfile
 import unittest
 
-from train import build_dataset_from_config
-from utils.config import load_dataset_paths
+from train import build_dataset_from_train_config
+from utils.config import load_train_config
 
 
 def _dummy_loader(path, mode=None):
@@ -11,16 +11,16 @@ def _dummy_loader(path, mode=None):
 
 
 class ConfigTests(unittest.TestCase):
-    def test_load_dataset_paths(self):
+    def test_load_train_config(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = os.path.join(tmpdir, "datasets.yml")
+            config_path = os.path.join(tmpdir, "train.yml")
             with open(config_path, "w", encoding="utf-8") as handle:
-                handle.write("datasets:\n  VEDIA: /tmp/data/VEDIA\n")
+                handle.write("dataset: VEDIA\nsplit: train\n")
 
-            paths = load_dataset_paths(config_path)
-            self.assertEqual(paths["VEDIA"], "/tmp/data/VEDIA")
+            config = load_train_config(config_path)
+            self.assertEqual(config["dataset"], "VEDIA")
 
-    def test_build_dataset_from_config(self):
+    def test_build_dataset_from_train_config(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = os.path.join(tmpdir, "VEDIA")
             os.makedirs(os.path.join(root, "trainA"), exist_ok=True)
@@ -30,14 +30,12 @@ class ConfigTests(unittest.TestCase):
             with open(os.path.join(root, "trainB", "0001.jpg"), "w", encoding="utf-8") as handle:
                 handle.write("ir")
 
-            config_path = os.path.join(tmpdir, "datasets.yml")
+            config_path = os.path.join(tmpdir, "train.yml")
             with open(config_path, "w", encoding="utf-8") as handle:
-                handle.write(f"datasets:\n  VEDIA: {root}\n")
+                handle.write(f"dataset: VEDIA\ndataset_root: {root}\n")
 
-            dataset = build_dataset_from_config(
+            dataset = build_dataset_from_train_config(
                 config_path,
-                dataset_name="VEDIA",
-                split="train",
                 loader=_dummy_loader,
             )
 
