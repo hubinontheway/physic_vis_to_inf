@@ -1,0 +1,29 @@
+lr: 0.0002
+batch_size: 4
+image_size: 256
+steps: 1000
+vis_interval: 500
+dataset: VEDIA
+split: train
+data_root: /data2/hubin/datasets
+loss_weights:
+  recon: 1.0
+  t_smooth: 0.1
+  eps_prior: 0.1
+  consistency: 0.2
+  corr: 0.05
+use_noise: true
+t_min: 1.0
+t_max: 10.0
+seed: 123
+model_type: vit_unet
+vit_unet:
+  base_channels: 32
+  vit_embed_dim: 256
+  vit_depth: 6
+  vit_heads: 8
+  patch_size: 16
+  use_mlp: false
+  use_timm: true
+  timm_model: vit_base_patch16_224
+  timm_pretrained: false
