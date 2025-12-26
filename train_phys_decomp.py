@@ -20,6 +20,7 @@ from datasets import create_dataset
 from models.phys_decomp import PhysDecompNet
 from models.vit_unet_phys import PhysDecompViTUNet
 from utils.config import load_yaml
+from utils.training_logger import TrainingRunLogger
 
 def _sample_geom_params(tensor: torch.Tensor, size: int) -> Tuple[int, int, bool, bool]:
     """
@@ -631,6 +632,9 @@ def run_training(config_path: str, steps_override: int | None = None) -> None:
     # Determine device (GPU if available, otherwise CPU), with config override
     device = _resolve_device(config)
     
+    runs_dir = os.path.join("runs", "phys_decomp")
+    run_logger = TrainingRunLogger.create(runs_dir, config_path)
+
     # Set up dataset
     dataset_name = str(config["dataset"])
     data_root = str(config.get("data_root", "/data2/hubin/datasets"))
@@ -681,13 +685,14 @@ def run_training(config_path: str, steps_override: int | None = None) -> None:
             t_max=t_max,
             use_noise=use_noise,
         ).to(device)
+
+    run_logger.log_model_info(model, device)
     
     # Initialize optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     # Extract loss weights and set up output directory
     weights = config["loss_weights"]
-    runs_dir = os.path.join("runs", "phys_decomp")
     checkpoint_dir = os.path.join(runs_dir, "checkpoints")
     if max_checkpoints < 1:
         max_checkpoints = 1
@@ -756,6 +761,7 @@ def run_training(config_path: str, steps_override: int | None = None) -> None:
             weights,
         )
         total_loss = losses["total"]
+        run_logger.log_losses(step, losses)
 
         # Perform optimization step
         optimizer.zero_grad()
