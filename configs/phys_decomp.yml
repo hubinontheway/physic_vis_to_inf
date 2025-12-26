@@ -1,29 +1,29 @@
-lr: 0.0002
-batch_size: 4
-image_size: 256
-steps: 1000
-vis_interval: 500
-dataset: VEDIA
-split: train
-data_root: /data2/hubin/datasets
-loss_weights:
-  recon: 1.0
-  t_smooth: 0.1
-  eps_prior: 0.1
-  consistency: 0.2
-  corr: 0.05
-use_noise: true
-t_min: 1.0
-t_max: 10.0
-seed: 123
-model_type: vit_unet
-vit_unet:
-  base_channels: 32
-  vit_embed_dim: 256
-  vit_depth: 6
-  vit_heads: 8
-  patch_size: 16
-  use_mlp: false
-  use_timm: true
-  timm_model: vit_base_patch16_224
-  timm_pretrained: false
+lr: 0.0002 # 学习率，供 Adam 优化器使用。
+batch_size: 4 # 每步训练的批大小。
+image_size: 256 # 训练时裁剪/缩放后的目标尺寸（正方形边长）。
+steps: 1000 # 训练迭代总步数。
+vis_interval: 500 # 可视化保存间隔（步数，<=0 表示不保存）。
+dataset: VEDIA # 数据集名称，传给 create_dataset（如 VEDIA）。
+split: train # 数据集划分（train/test）。
+data_root: /data2/hubin/datasets # 默认数据集根目录；未指定 dataset_root 时使用。
+loss_weights: # 总损失中各项权重配置。
+  recon: 1.0 # 重建损失权重（IR 预测与输入 IR 的 L1 差）。
+  t_smooth: 0.1 # 温度图平滑正则权重（TV-like）。
+  eps_prior: 0.1 # 发射率先验权重（平滑 + 稀疏）。
+  consistency: 0.2 # 两视角一致性损失权重。
+  corr: 0.05 # 温度与发射率相关性损失权重（鼓励低相关性）。
+use_noise: true # 是否启用噪声分支并加入合成 IR。
+t_min: 1.0 # 温度输出的最小值（sigmoid 缩放后）。
+t_max: 10.0 # 温度输出的最大值（必须大于 t_min）。
+seed: 123 # 随机种子，用于控制增强与采样的可重复性。
+model_type: vit_unet # 模型类型；vit_unet 使用 ViT-UNet，其他值使用 CNN。
+vit_unet: # ViT-UNet 相关子配置。
+  base_channels: 32 # CNN stem/decoder 的基础通道数。
+  vit_embed_dim: 256 # ViT token 嵌入维度（use_timm=true 时忽略）。
+  vit_depth: 6 # ViT block 层数（use_timm=true 时忽略）。
+  vit_heads: 8 # 注意力头数（use_timm=true 时忽略）。
+  patch_size: 16 # ViT patch 大小；输入尺寸需可被整除。
+  use_mlp: false # 物理层中是否使用 MLP 替代 Softplus。
+  use_timm: true # 是否使用 timm 的 ViT backbone。
+  timm_model: vit_base_patch16_224 # timm 模型名称。
+  timm_pretrained: false # 是否加载 timm 预训练权重。
