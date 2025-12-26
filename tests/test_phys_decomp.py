@@ -38,7 +38,7 @@ def test_training_dry_run():
         torch.save(torch.rand(1, 16, 16), sample_ir_path)
         torch.save(torch.rand(1, 16, 16), sample_vis_path)
 
-        config_path = os.path.join(tmpdir, "phys_decomp.yml")
+        config_path = os.path.join(tmpdir, "phys_decomp_vit_no_pretrain.yml")
         with open(config_path, "w", encoding="utf-8") as handle:
             handle.write(
                 "lr: 0.0001\n"
