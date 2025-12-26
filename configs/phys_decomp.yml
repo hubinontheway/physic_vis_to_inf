@@ -1,9 +1,9 @@
 lr: 0.0002 # 学习率，供 Adam 优化器使用。
-batch_size: 4 # 每步训练的批大小。
+batch_size: 8 # 每步训练的批大小。
 image_size: 256 # 训练时裁剪/缩放后的目标尺寸（正方形边长）。
-steps: 10000 # 训练迭代总步数。
-eval_interval: 1000 # 测试与保存权重间隔（步数，<=0 表示不测试/不保存）。
-vis_interval: 1000 # 可视化保存间隔（步数，<=0 表示不保存）。
+steps: 100000 # 训练迭代总步数。
+eval_interval: 5000 # 测试与保存权重间隔（步数，<=0 表示不测试/不保存）。
+vis_interval: 5000 # 可视化保存间隔（步数，<=0 表示不保存）。
 eval_split: test # 测试使用的数据集划分。
 eval_batch_size: 4 # 测试时的批大小（默认与 batch_size 相同）。
 best_metric: total # 评估指标，用于保存 best model。
@@ -22,6 +22,7 @@ use_noise: true # 是否启用噪声分支并加入合成 IR。
 t_min: 1.0 # 温度输出的最小值（sigmoid 缩放后）。
 t_max: 10.0 # 温度输出的最大值（必须大于 t_min）。
 seed: 123 # 随机种子，用于控制增强与采样的可重复性。
+device: cuda:5 # 训练设备；可设为 "cuda:1" 或 "cpu"，留空则自动选择。
 model_type: vit_unet # 模型类型；vit_unet 使用 ViT-UNet，其他值使用 CNN。
 vit_unet: # ViT-UNet 相关子配置。
   base_channels: 32 # CNN stem/decoder 的基础通道数。

@@ -521,6 +521,47 @@ def _validate_config(config: Dict[str, object]) -> None:
         raise ValueError("'loss_weights' must be a mapping")
     if "dataset" not in config:
         raise KeyError("train config missing 'dataset'")
+    device_value = config.get("device")
+    if device_value is not None and not isinstance(device_value, (str, int)):
+        raise ValueError("'device' must be a string like 'cuda:0' or 'cpu'")
+
+
+def _resolve_device(config: Dict[str, object]) -> torch.device:
+    """
+    Resolve the training device from configuration.
+
+    Args:
+        config (Dict[str, object]): Training configuration dictionary
+
+    Returns:
+        torch.device: Selected device for training
+    """
+    device_value = config.get("device")
+    if device_value is None:
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    if isinstance(device_value, int):
+        device_str = f"cuda:{device_value}"
+    else:
+        device_str = str(device_value)
+
+    try:
+        device = torch.device(device_str)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid device '{device_value}'") from exc
+
+    if device.type == "cuda":
+        if not torch.cuda.is_available():
+            raise ValueError("CUDA device requested but CUDA is not available")
+        if device.index is not None:
+            count = torch.cuda.device_count()
+            if device.index < 0 or device.index >= count:
+                raise ValueError(
+                    f"CUDA device index {device.index} out of range "
+                    f"(device_count={count})"
+                )
+            torch.cuda.set_device(device.index)
+    return device
 
 
 def _ensure_timm_available() -> None:
@@ -587,8 +628,8 @@ def run_training(config_path: str, steps_override: int | None = None) -> None:
     random.seed(seed)
     torch.manual_seed(seed)
 
-    # Determine device (GPU if available, otherwise CPU)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # Determine device (GPU if available, otherwise CPU), with config override
+    device = _resolve_device(config)
     
     # Set up dataset
     dataset_name = str(config["dataset"])
