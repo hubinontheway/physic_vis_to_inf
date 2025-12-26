@@ -1,0 +1,28 @@
+lr: 0.0002 # 学习率，供 Adam 优化器使用。
+batch_size: 8 # 每步训练的批大小。
+image_size: 256 # 训练时裁剪/缩放后的目标尺寸（正方形边长）。
+steps: 100000 # 训练迭代总步数。
+eval_interval: 5000 # 测试与保存权重间隔（步数，<=0 表示不测试/不保存）。
+vis_interval: 5000 # 可视化保存间隔（步数，<=0 表示不保存）。
+lr_schedule: # 动态学习率配置（默认 warmup + cosine）。
+  type: cosine # 可选: cosine / none
+  warmup_steps: 1000 # 线性 warmup 步数。
+  min_lr: 0.00001 # 最小学习率（cosine 衰减下限）。
+eval_split: test # 测试使用的数据集划分。
+eval_batch_size: 4 # 测试时的批大小（默认与 batch_size 相同）。
+best_metric: psnr # 评估指标，用于保存 best model。
+best_metric_mode: max # best_metric 取最小还是最大（min/max）。
+max_checkpoints: 5 # 最多保留的最近权重数量（上限 5）。
+dataset: VEDIA # 数据集名称，传给 create_dataset（如 VEDIA）。
+split: train # 数据集划分（train/test）。
+data_root: /data2/hubin/datasets # 默认数据集根目录；未指定 dataset_root 时使用。
+seed: 123 # 随机种子，用于控制增强与采样的可重复性。
+device: cuda:5 # 训练设备；可设为 "cuda:1" 或 "cpu"，留空则自动选择。
+flow_model: # Flow Matching 模型配置。
+  base_channels: 32 # 基础通道数。
+  channel_mults: [1, 2, 4] # UNet 通道倍率。
+flow_sampling: # 采样配置（用于评估/可视化）。
+  method: euler # ODE 解法：euler / midpoint / dopri5 等。
+  steps: 50 # 采样步数；未设置 step_size 时使用。
+  atol: 0.00001 # ODE 绝对误差容忍度。
+  rtol: 0.00001 # ODE 相对误差容忍度。
