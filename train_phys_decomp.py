@@ -154,6 +154,153 @@ def _prepare_batch(ir: torch.Tensor, size: int) -> Tuple[torch.Tensor, torch.Ten
     return v1, v2
 
 
+def _compute_losses(
+    v1: torch.Tensor,
+    v2: torch.Tensor,
+    t1: torch.Tensor,
+    eps1: torch.Tensor,
+    n1: Optional[torch.Tensor],
+    ir1_hat: torch.Tensor,
+    t2: torch.Tensor,
+    eps2: torch.Tensor,
+    n2: Optional[torch.Tensor],
+    ir2_hat: torch.Tensor,
+    weights: Dict[str, object],
+) -> Dict[str, torch.Tensor]:
+    """
+    Compute the weighted loss dictionary for two-view training/evaluation.
+    
+    Args:
+        v1 (torch.Tensor): Input view 1
+        v2 (torch.Tensor): Input view 2
+        t1 (torch.Tensor): Temperature prediction for view 1
+        eps1 (torch.Tensor): Emissivity prediction for view 1
+        n1 (Optional[torch.Tensor]): Noise prediction for view 1
+        ir1_hat (torch.Tensor): Reconstructed IR for view 1
+        t2 (torch.Tensor): Temperature prediction for view 2
+        eps2 (torch.Tensor): Emissivity prediction for view 2
+        n2 (Optional[torch.Tensor]): Noise prediction for view 2
+        ir2_hat (torch.Tensor): Reconstructed IR for view 2
+        weights (Dict[str, object]): Loss weight mapping
+        
+    Returns:
+        Dict[str, torch.Tensor]: Loss components including total
+    """
+    loss_recon = recon_loss(ir1_hat, v1) + recon_loss(ir2_hat, v2)
+    loss_t_smooth = smoothness_loss(t1) + smoothness_loss(t2)
+    loss_eps_prior = emissivity_prior_loss(eps1) + emissivity_prior_loss(eps2)
+    loss_consistency = consistency_loss(t1, t2, eps1, eps2, n1, n2)
+    loss_corr = corr_loss(t1, eps1) + corr_loss(t2, eps2)
+
+    total_loss = (
+        float(weights.get("recon", 1.0)) * loss_recon
+        + float(weights.get("t_smooth", 0.1)) * loss_t_smooth
+        + float(weights.get("eps_prior", 0.1)) * loss_eps_prior
+        + float(weights.get("consistency", 0.1)) * loss_consistency
+        + float(weights.get("corr", 0.05)) * loss_corr
+    )
+    return {
+        "total": total_loss,
+        "recon": loss_recon,
+        "t_smooth": loss_t_smooth,
+        "eps_prior": loss_eps_prior,
+        "consistency": loss_consistency,
+        "corr": loss_corr,
+    }
+
+
+def _evaluate_model(
+    model: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    weights: Dict[str, object],
+) -> Dict[str, float]:
+    """
+    Run evaluation on a dataloader and return averaged metrics.
+    
+    Args:
+        model (nn.Module): Model to evaluate
+        loader (DataLoader): Evaluation dataloader
+        device (torch.device): Device to run on
+        weights (Dict[str, object]): Loss weight mapping
+        
+    Returns:
+        Dict[str, float]: Averaged metrics over the dataset
+    """
+    was_training = model.training
+    model.eval()
+    totals = {
+        "total": 0.0,
+        "recon": 0.0,
+        "t_smooth": 0.0,
+        "eps_prior": 0.0,
+        "consistency": 0.0,
+        "corr": 0.0,
+    }
+    total_samples = 0
+    with torch.no_grad():
+        for batch in loader:
+            if not isinstance(batch, dict) or "ir" not in batch:
+                raise ValueError("Expected dataset batch with 'ir' tensor")
+            ir = batch["ir"].to(device)
+            v1 = ir
+            v2 = ir
+            t1, eps1, n1, ir1_hat = model(v1)
+            t2, eps2, n2, ir2_hat = model(v2)
+            losses = _compute_losses(
+                v1,
+                v2,
+                t1,
+                eps1,
+                n1,
+                ir1_hat,
+                t2,
+                eps2,
+                n2,
+                ir2_hat,
+                weights,
+            )
+            batch_size = int(ir.shape[0])
+            for key in totals:
+                totals[key] += losses[key].item() * batch_size
+            total_samples += batch_size
+    if was_training:
+        model.train()
+    if total_samples == 0:
+        raise ValueError("Evaluation loader returned no samples")
+    return {key: value / total_samples for key, value in totals.items()}
+
+
+def _prune_checkpoints(checkpoint_dir: str, max_keep: int) -> None:
+    """
+    Keep only the most recent checkpoints (by modification time).
+    """
+    if max_keep <= 0:
+        return
+    try:
+        names = os.listdir(checkpoint_dir)
+    except FileNotFoundError:
+        return
+    candidates = []
+    for name in names:
+        if not name.startswith("step_") or not name.endswith(".pt"):
+            continue
+        path = os.path.join(checkpoint_dir, name)
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            mtime = 0.0
+        candidates.append((mtime, path))
+    if len(candidates) <= max_keep:
+        return
+    candidates.sort(key=lambda item: item[0])
+    for _, path in candidates[:-max_keep]:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
 def _save_visualization(
     output_dir: str,
     step: int,
@@ -425,6 +572,12 @@ def run_training(config_path: str, steps_override: int | None = None) -> None:
     if steps_override is not None:
         steps = int(steps_override)
     vis_interval = int(config.get("vis_interval", 50))
+    eval_interval = int(config.get("eval_interval", 0))
+    eval_split = str(config.get("eval_split", "test"))
+    eval_batch_size = int(config.get("eval_batch_size", batch_size))
+    max_checkpoints = min(5, int(config.get("max_checkpoints", 5)))
+    best_metric = str(config.get("best_metric", "total")).lower()
+    best_metric_mode = str(config.get("best_metric_mode", "min")).lower()
     use_noise = bool(config.get("use_noise", True))
     t_min = float(config.get("t_min", 1.0))
     t_max = float(config.get("t_max", 10.0))
@@ -493,7 +646,36 @@ def run_training(config_path: str, steps_override: int | None = None) -> None:
 
     # Extract loss weights and set up output directory
     weights = config["loss_weights"]
-    runs_dir = os.path.join("runs", "phys_decomp_vit_no_pretrain")
+    runs_dir = os.path.join("runs", "phys_decomp")
+    checkpoint_dir = os.path.join(runs_dir, "checkpoints")
+    if max_checkpoints < 1:
+        max_checkpoints = 1
+    metric_keys = {"total", "recon", "t_smooth", "eps_prior", "consistency", "corr"}
+    if best_metric not in metric_keys:
+        raise ValueError(
+            f"best_metric must be one of {sorted(metric_keys)}, got '{best_metric}'"
+        )
+    if best_metric_mode not in {"min", "max"}:
+        raise ValueError("best_metric_mode must be 'min' or 'max'")
+    best_value = float("inf") if best_metric_mode == "min" else -float("inf")
+
+    eval_loader = None
+    if eval_interval > 0:
+        eval_dataset = create_dataset(
+            dataset_name,
+            root=dataset_root,
+            split=eval_split,
+            loader=_load_ir_sample,
+            transform=lambda v, r: _paired_transform(v, r, image_size),
+            vis_mode="L",
+            ir_mode="L",
+        )
+        eval_loader = DataLoader(
+            eval_dataset,
+            batch_size=eval_batch_size,
+            shuffle=False,
+            drop_last=False,
+        )
 
     # Training loop
     for step in range(1, steps + 1):
@@ -519,21 +701,20 @@ def run_training(config_path: str, steps_override: int | None = None) -> None:
         t1, eps1, n1, ir1_hat = model(v1)
         t2, eps2, n2, ir2_hat = model(v2)
 
-        # Compute individual loss components
-        loss_recon = recon_loss(ir1_hat, v1) + recon_loss(ir2_hat, v2)  # Reconstruction loss
-        loss_t_smooth = smoothness_loss(t1) + smoothness_loss(t2)  # Temperature smoothness
-        loss_eps_prior = emissivity_prior_loss(eps1) + emissivity_prior_loss(eps2)  # Emissivity prior
-        loss_consistency = consistency_loss(t1, t2, eps1, eps2, n1, n2)  # Consistency between views
-        loss_corr = corr_loss(t1, eps1) + corr_loss(t2, eps2)  # Decoupling of temperature and emissivity
-
-        # Compute total loss as weighted sum of all components
-        total_loss = (
-            float(weights.get("recon", 1.0)) * loss_recon
-            + float(weights.get("t_smooth", 0.1)) * loss_t_smooth
-            + float(weights.get("eps_prior", 0.1)) * loss_eps_prior
-            + float(weights.get("consistency", 0.1)) * loss_consistency
-            + float(weights.get("corr", 0.05)) * loss_corr
+        losses = _compute_losses(
+            v1,
+            v2,
+            t1,
+            eps1,
+            n1,
+            ir1_hat,
+            t2,
+            eps2,
+            n2,
+            ir2_hat,
+            weights,
         )
+        total_loss = losses["total"]
 
         # Perform optimization step
         optimizer.zero_grad()
@@ -545,18 +726,63 @@ def run_training(config_path: str, steps_override: int | None = None) -> None:
             "step={step} total={total:.4f} recon={recon:.4f} t_smooth={t_smooth:.4f} "
             "eps_prior={eps_prior:.4f} consistency={consistency:.4f} corr={corr:.4f}".format(
                 step=step,
-                total=total_loss.item(),
-                recon=loss_recon.item(),
-                t_smooth=loss_t_smooth.item(),
-                eps_prior=loss_eps_prior.item(),
-                consistency=loss_consistency.item(),
-                corr=loss_corr.item(),
+                total=losses["total"].item(),
+                recon=losses["recon"].item(),
+                t_smooth=losses["t_smooth"].item(),
+                eps_prior=losses["eps_prior"].item(),
+                consistency=losses["consistency"].item(),
+                corr=losses["corr"].item(),
             )
         )
 
         # Save visualization at specified intervals
         if vis_interval > 0 and step % vis_interval == 0:
             _save_visualization(runs_dir, step, v1, ir1_hat, t1, eps1)
+
+        if eval_interval > 0 and eval_loader is not None and step % eval_interval == 0:
+            metrics = _evaluate_model(model, eval_loader, device, weights)
+            print(
+                "eval step={step} total={total:.4f} recon={recon:.4f} t_smooth={t_smooth:.4f} "
+                "eps_prior={eps_prior:.4f} consistency={consistency:.4f} corr={corr:.4f}".format(
+                    step=step,
+                    total=metrics["total"],
+                    recon=metrics["recon"],
+                    t_smooth=metrics["t_smooth"],
+                    eps_prior=metrics["eps_prior"],
+                    consistency=metrics["consistency"],
+                    corr=metrics["corr"],
+                )
+            )
+            os.makedirs(checkpoint_dir, exist_ok=True)
+            checkpoint = {
+                "step": step,
+                "model": model.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "metrics": metrics,
+                "best_metric": best_metric,
+                "best_metric_mode": best_metric_mode,
+            }
+            checkpoint_path = os.path.join(checkpoint_dir, f"step_{step}.pt")
+            torch.save(checkpoint, checkpoint_path)
+            _prune_checkpoints(checkpoint_dir, max_checkpoints)
+
+            current_value = metrics[best_metric]
+            is_better = (
+                current_value < best_value
+                if best_metric_mode == "min"
+                else current_value > best_value
+            )
+            if is_better:
+                best_value = current_value
+                best_path = os.path.join(checkpoint_dir, "best.pt")
+                torch.save(checkpoint, best_path)
+                print(
+                    "best model updated: {metric}={value:.4f} at step={step}".format(
+                        metric=best_metric,
+                        value=best_value,
+                        step=step,
+                    )
+                )
 
 
 def parse_args() -> argparse.Namespace:
@@ -569,7 +795,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Minimal PhysDecompNet training")
     parser.add_argument(
         "--config",
-        default="configs/phys_decomp_vit_no_pretrain.yml",
+        default="configs/phys_decomp.yml",
         help="Path to training config",
     )
     parser.add_argument("--steps", type=int, help="Override number of steps")

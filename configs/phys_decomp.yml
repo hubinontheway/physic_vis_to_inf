@@ -1,8 +1,14 @@
 lr: 0.0002 # 学习率，供 Adam 优化器使用。
 batch_size: 4 # 每步训练的批大小。
 image_size: 256 # 训练时裁剪/缩放后的目标尺寸（正方形边长）。
-steps: 1000 # 训练迭代总步数。
-vis_interval: 500 # 可视化保存间隔（步数，<=0 表示不保存）。
+steps: 10000 # 训练迭代总步数。
+eval_interval: 1000 # 测试与保存权重间隔（步数，<=0 表示不测试/不保存）。
+vis_interval: 1000 # 可视化保存间隔（步数，<=0 表示不保存）。
+eval_split: test # 测试使用的数据集划分。
+eval_batch_size: 4 # 测试时的批大小（默认与 batch_size 相同）。
+best_metric: total # 评估指标，用于保存 best model。
+best_metric_mode: min # best_metric 取最小还是最大（min/max）。
+max_checkpoints: 5 # 最多保留的最近权重数量（上限 5）。
 dataset: VEDIA # 数据集名称，传给 create_dataset（如 VEDIA）。
 split: train # 数据集划分（train/test）。
 data_root: /data2/hubin/datasets # 默认数据集根目录；未指定 dataset_root 时使用。
@@ -26,4 +32,4 @@ vit_unet: # ViT-UNet 相关子配置。
   use_mlp: false # 物理层中是否使用 MLP 替代 Softplus。
   use_timm: true # 是否使用 timm 的 ViT backbone。
   timm_model: vit_base_patch16_224 # timm 模型名称。
-  timm_pretrained: false # 是否加载 timm 预训练权重。
+  timm_pretrained: true # 是否加载 timm 预训练权重。
