@@ -20,6 +20,7 @@ from datasets import create_dataset
 from models.phys_decomp import PhysDecompNet
 from models.vit_unet_phys import PhysDecompViTUNet
 from utils.config import load_yaml
+from utils.lr_schedule import create_lr_scheduler
 from utils.training_logger import TrainingRunLogger
 
 def _sample_geom_params(tensor: torch.Tensor, size: int) -> Tuple[int, int, bool, bool]:
@@ -525,6 +526,12 @@ def _validate_config(config: Dict[str, object]) -> None:
     device_value = config.get("device")
     if device_value is not None and not isinstance(device_value, (str, int)):
         raise ValueError("'device' must be a string like 'cuda:0' or 'cpu'")
+    lr_schedule = config.get("lr_schedule")
+    if lr_schedule is not None and not isinstance(lr_schedule, (str, dict)):
+        raise ValueError("'lr_schedule' must be a string or mapping")
+    if isinstance(lr_schedule, dict) and "type" in lr_schedule:
+        if not isinstance(lr_schedule["type"], str):
+            raise ValueError("'lr_schedule.type' must be a string")
 
 
 def _resolve_device(config: Dict[str, object]) -> torch.device:
@@ -690,6 +697,7 @@ def run_training(config_path: str, steps_override: int | None = None) -> None:
     
     # Initialize optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    scheduler = create_lr_scheduler(optimizer, config, steps)
 
     # Extract loss weights and set up output directory
     weights = config["loss_weights"]
@@ -725,6 +733,8 @@ def run_training(config_path: str, steps_override: int | None = None) -> None:
 
     # Training loop
     for step in range(1, steps + 1):
+        if scheduler is not None:
+            scheduler.step(step)
         try:
             batch = next(iterator)
         except StopIteration:

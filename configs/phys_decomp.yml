@@ -4,6 +4,10 @@ image_size: 256 # 训练时裁剪/缩放后的目标尺寸（正方形边长）�
 steps: 100000 # 训练迭代总步数。
 eval_interval: 5000 # 测试与保存权重间隔（步数，<=0 表示不测试/不保存）。
 vis_interval: 5000 # 可视化保存间隔（步数，<=0 表示不保存）。
+lr_schedule: # 动态学习率配置（默认 warmup + cosine）。
+  type: cosine # 可选: cosine / none
+  warmup_steps: 1000 # 线性 warmup 步数。
+  min_lr: 0.00001 # 最小学习率（cosine 衰减下限）。
 eval_split: test # 测试使用的数据集划分。
 eval_batch_size: 4 # 测试时的批大小（默认与 batch_size 相同）。
 best_metric: total # 评估指标，用于保存 best model。
