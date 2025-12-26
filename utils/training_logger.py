@@ -48,14 +48,23 @@ class TrainingRunLogger:
     config_copy_path: str
     loss_csv_path: str
     metadata_path: str
+    loss_columns: tuple[str, ...]
 
     @classmethod
-    def create(cls, run_dir: str, config_path: str) -> "TrainingRunLogger":
+    def create(
+        cls,
+        run_dir: str,
+        config_path: str,
+        loss_columns: tuple[str, ...] | None = None,
+    ) -> "TrainingRunLogger":
         os.makedirs(run_dir, exist_ok=True)
         run_id = _format_run_id()
         config_copy_path = os.path.join(run_dir, f"config_{run_id}.yml")
         loss_csv_path = os.path.join(run_dir, f"losses_{run_id}.csv")
         metadata_path = os.path.join(run_dir, f"run_{run_id}.json")
+        columns = loss_columns or LOSS_COLUMNS
+        if not columns or columns[0] != "step":
+            raise ValueError("loss_columns must start with 'step'")
         if os.path.exists(config_path):
             shutil.copyfile(config_path, config_copy_path)
         return cls(
@@ -64,6 +73,7 @@ class TrainingRunLogger:
             config_copy_path=config_copy_path,
             loss_csv_path=loss_csv_path,
             metadata_path=metadata_path,
+            loss_columns=tuple(columns),
         )
 
     def log_model_info(self, model: nn.Module, device: torch.device) -> None:
@@ -90,7 +100,7 @@ class TrainingRunLogger:
 
     def log_losses(self, step: int, losses: Mapping[str, object]) -> None:
         row = {"step": int(step)}
-        for key in LOSS_COLUMNS[1:]:
+        for key in self.loss_columns[1:]:
             value = losses.get(key)
             if value is None:
                 row[key] = ""
@@ -98,7 +108,7 @@ class TrainingRunLogger:
                 row[key] = _tensor_to_float(value)
         file_exists = os.path.exists(self.loss_csv_path)
         with open(self.loss_csv_path, "a", encoding="utf-8", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=LOSS_COLUMNS)
+            writer = csv.DictWriter(handle, fieldnames=self.loss_columns)
             if not file_exists:
                 writer.writeheader()
             writer.writerow(row)
