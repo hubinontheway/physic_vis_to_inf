@@ -134,7 +134,8 @@ def run_training(config_path: str, steps_override: int | None = None) -> None:
     torch.manual_seed(seed)
 
     device = resolve_device(config)
-    runs_dir = os.path.join("runs", "vis2ir_flow")
+    config_name = os.path.splitext(os.path.basename(config_path))[0]
+    runs_dir = os.path.join("runs", config_name)
     run_logger = TrainingRunLogger.create(
         runs_dir,
         config_path,

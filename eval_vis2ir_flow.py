@@ -28,6 +28,19 @@ def _load_checkpoint(model: torch.nn.Module, checkpoint_path: str, device: torch
     model.load_state_dict(state, strict=True)
 
 
+def _resolve_run_dir(run_dir: str | None, config_path: str | None) -> str:
+    if run_dir:
+        return run_dir
+    if config_path:
+        config_dir = os.path.dirname(config_path)
+        name = os.path.basename(config_path)
+        if name.startswith("config_") and name.endswith(".yml") and config_dir:
+            return config_dir
+        config_name = os.path.splitext(os.path.basename(config_path))[0]
+        return os.path.join("runs", config_name)
+    raise ValueError("Either --run-dir or --config must be provided")
+
+
 def run_eval(run_dir: str) -> Dict[str, float]:
     config_path, run_id = find_latest_config(run_dir)
     config = load_yaml(config_path)
@@ -146,15 +159,19 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--run-dir",
-        default=os.path.join("runs", "vis2ir_flow"),
         help="Run directory containing config_*.yml and checkpoints/",
+    )
+    parser.add_argument(
+        "--config",
+        help="Config path; if provided, run_dir defaults to runs/<config_name> or the config's folder.",
     )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    metrics = run_eval(args.run_dir)
+    run_dir = _resolve_run_dir(args.run_dir, args.config)
+    metrics = run_eval(run_dir)
     print("eval psnr={psnr:.4f} ssim={ssim:.4f}".format(**metrics))
 
 
