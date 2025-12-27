@@ -27,7 +27,7 @@ flow_sampling: # 采样配置（用于评估/可视化）。
   atol: 0.00001 # ODE 绝对误差容忍度。
   rtol: 0.00001 # ODE 相对误差容忍度。
 phys_align: # 物理属性对齐模块（可选）。
-  enabled: false # 启用后会用 vis -> (T, eps) 作为 flow 条件输入。
+  enabled: true # 启用后会用 vis -> (T, eps) 作为 flow 条件输入。
   cond_mode: vis_phys # vis / phys / vis_phys（推荐 vis_phys，避免退化）。
   base_channels: 16 # 对齐模块基础通道数（轻量优先）。
   channel_mults: [1, 2, 4] # 对齐模块通道倍率。

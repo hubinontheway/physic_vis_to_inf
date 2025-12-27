@@ -4,13 +4,14 @@ import argparse
 import csv
 import os
 import time
-from typing import Dict
+from typing import Dict, Optional
 
 import torch
 from torch.utils.data import DataLoader
 
 from datasets import create_dataset
 from models.vis2ir_flow import Vis2IRFlowUNet
+from models.vis2phys_align import Vis2PhysAlignUNet
 from utils.config import load_yaml
 from utils.device import resolve_device
 from utils.flow_sampling import build_solver, sample_ir
@@ -19,13 +20,44 @@ from utils.run_artifacts import find_best_checkpoint, find_latest_config, save_e
 from utils.vision import load_tensor_or_pil, paired_transform, tensor_to_pil
 
 
-def _load_checkpoint(model: torch.nn.Module, checkpoint_path: str, device: torch.device) -> None:
+def _load_checkpoint(
+    model: torch.nn.Module,
+    checkpoint_path: str,
+    device: torch.device,
+    phys_align: Optional[torch.nn.Module] = None,
+) -> None:
     checkpoint = torch.load(checkpoint_path, map_location=device)
     if isinstance(checkpoint, dict) and "model" in checkpoint:
         state = checkpoint["model"]
     else:
         state = checkpoint
     model.load_state_dict(state, strict=True)
+    if phys_align is not None:
+        if not isinstance(checkpoint, dict) or "phys_align" not in checkpoint:
+            raise ValueError("Checkpoint is missing phys_align weights")
+        phys_align.load_state_dict(checkpoint["phys_align"], strict=True)
+
+
+def _build_cond(
+    vis: torch.Tensor,
+    phys_align: Optional[Vis2PhysAlignUNet],
+    cond_mode: str,
+    t_cond_norm: bool,
+) -> torch.Tensor:
+    if cond_mode == "vis":
+        return vis
+    if phys_align is None:
+        raise ValueError("phys_align must be enabled for cond_mode != 'vis'")
+    temperature, emissivity = phys_align(vis)
+    if t_cond_norm:
+        denom = float(phys_align.t_max - phys_align.t_min)
+        temperature = (temperature - float(phys_align.t_min)) / denom
+        temperature = torch.clamp(temperature, 0.0, 1.0)
+    if cond_mode == "phys":
+        return torch.cat([temperature, emissivity], dim=1)
+    if cond_mode == "vis_phys":
+        return torch.cat([vis, temperature, emissivity], dim=1)
+    raise ValueError(f"Unsupported cond_mode '{cond_mode}'")
 
 
 def _resolve_run_dir(run_dir: str | None, config_path: str | None) -> str:
@@ -70,6 +102,19 @@ def run_eval(run_dir: str) -> Dict[str, float]:
     )
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, drop_last=False)
 
+    phys_align_cfg = config.get("phys_align", {}) or {}
+    phys_align_enabled = bool(phys_align_cfg.get("enabled", False))
+    cond_mode = str(phys_align_cfg.get("cond_mode", "vis")).lower()
+    t_cond_norm = bool(phys_align_cfg.get("t_cond_norm", True))
+    if not phys_align_enabled and cond_mode != "vis":
+        raise ValueError("phys_align.cond_mode requires phys_align.enabled=true")
+    if cond_mode == "vis":
+        cond_channels = 3
+    elif cond_mode == "phys":
+        cond_channels = 2
+    else:
+        cond_channels = 5
+
     flow_model_cfg = config.get("flow_model", {}) or {}
     base_channels = int(flow_model_cfg.get("base_channels", 32))
     channel_mults = flow_model_cfg.get("channel_mults", [1, 2, 4])
@@ -78,13 +123,31 @@ def run_eval(run_dir: str) -> Dict[str, float]:
     channel_mults = tuple(int(v) for v in channel_mults)
     model = Vis2IRFlowUNet(
         in_channels=1,
-        cond_channels=3,
+        cond_channels=cond_channels,
         base_channels=base_channels,
         channel_mults=channel_mults,
     ).to(device)
+    phys_align = None
+    if phys_align_enabled:
+        phys_base_channels = int(phys_align_cfg.get("base_channels", 16))
+        phys_mults = phys_align_cfg.get("channel_mults", [1, 2, 4])
+        if not isinstance(phys_mults, (list, tuple)):
+            raise ValueError("'phys_align.channel_mults' must be a list of ints")
+        phys_mults = tuple(int(v) for v in phys_mults)
+        phys_t_min = float(phys_align_cfg.get("t_min", 1.0))
+        phys_t_max = float(phys_align_cfg.get("t_max", 10.0))
+        phys_align = Vis2PhysAlignUNet(
+            in_channels=3,
+            base_channels=phys_base_channels,
+            channel_mults=phys_mults,
+            t_min=phys_t_min,
+            t_max=phys_t_max,
+        ).to(device)
     checkpoint_path = find_best_checkpoint(run_dir)
-    _load_checkpoint(model, checkpoint_path, device)
+    _load_checkpoint(model, checkpoint_path, device, phys_align=phys_align)
     model.eval()
+    if phys_align is not None:
+        phys_align.eval()
 
     solver = build_solver(model)
     sampling_cfg = config.get("flow_sampling", {}) or {}
@@ -106,7 +169,8 @@ def run_eval(run_dir: str) -> Dict[str, float]:
                 torch.cuda.synchronize(device)
                 torch.cuda.reset_peak_memory_stats(device)
             start_time = time.perf_counter()
-            pred_ir = sample_ir(solver, vis, sampling_cfg).clamp(0.0, 1.0)
+            cond = _build_cond(vis, phys_align, cond_mode, t_cond_norm)
+            pred_ir = sample_ir(solver, cond, sampling_cfg).clamp(0.0, 1.0)
             if device.type == "cuda":
                 torch.cuda.synchronize(device)
             elapsed = time.perf_counter() - start_time

@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 import random
-from typing import Dict, Iterator
+from typing import Dict, Iterator, Optional, Tuple
 
 import torch
 from torch import nn
@@ -12,6 +12,7 @@ from torch.utils.data import DataLoader
 from flow_matching.path import CondOTProbPath
 from datasets import create_dataset
 from models.vis2ir_flow import Vis2IRFlowUNet
+from models.vis2phys_align import Vis2PhysAlignUNet
 from utils.config import load_yaml
 from utils.device import resolve_device
 from utils.flow_sampling import build_solver, sample_ir
@@ -38,6 +39,15 @@ def _validate_config(config: Dict[str, object]) -> None:
     flow_sampling = config.get("flow_sampling", {})
     if flow_sampling is not None and not isinstance(flow_sampling, dict):
         raise ValueError("'flow_sampling' must be a mapping")
+    phys_align = config.get("phys_align", {})
+    if phys_align is not None and not isinstance(phys_align, dict):
+        raise ValueError("'phys_align' must be a mapping")
+    phys_align = phys_align or {}
+    cond_mode = str(phys_align.get("cond_mode", "vis")).lower()
+    if cond_mode not in {"vis", "phys", "vis_phys"}:
+        raise ValueError("phys_align.cond_mode must be 'vis', 'phys', or 'vis_phys'")
+    if not bool(phys_align.get("enabled", False)) and cond_mode != "vis":
+        raise ValueError("phys_align.cond_mode requires phys_align.enabled=true")
 
 
 def _prune_checkpoints(checkpoint_dir: str, max_keep: int) -> None:
@@ -109,6 +119,28 @@ def _save_visualization(
     grid.save(os.path.join(output_dir, f"step_{step}.png"))
 
 
+def _build_cond(
+    vis: torch.Tensor,
+    phys_align: Optional[Vis2PhysAlignUNet],
+    cond_mode: str,
+    t_cond_norm: bool,
+) -> torch.Tensor:
+    if cond_mode == "vis":
+        return vis
+    if phys_align is None:
+        raise ValueError("phys_align must be enabled for cond_mode != 'vis'")
+    temperature, emissivity = phys_align(vis)
+    if t_cond_norm:
+        denom = float(phys_align.t_max - phys_align.t_min)
+        temperature = (temperature - float(phys_align.t_min)) / denom
+        temperature = torch.clamp(temperature, 0.0, 1.0)
+    if cond_mode == "phys":
+        return torch.cat([temperature, emissivity], dim=1)
+    if cond_mode == "vis_phys":
+        return torch.cat([vis, temperature, emissivity], dim=1)
+    raise ValueError(f"Unsupported cond_mode '{cond_mode}'")
+
+
 def run_training(config_path: str, steps_override: int | None = None) -> None:
     config = load_yaml(config_path)
     if not isinstance(config, dict):
@@ -158,6 +190,17 @@ def run_training(config_path: str, steps_override: int | None = None) -> None:
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=False)
     iterator: Iterator[Dict[str, torch.Tensor]] = iter(loader)
 
+    phys_align_cfg = config.get("phys_align", {}) or {}
+    phys_align_enabled = bool(phys_align_cfg.get("enabled", False))
+    cond_mode = str(phys_align_cfg.get("cond_mode", "vis")).lower()
+    t_cond_norm = bool(phys_align_cfg.get("t_cond_norm", True))
+    if cond_mode == "vis":
+        cond_channels = 3
+    elif cond_mode == "phys":
+        cond_channels = 2
+    else:
+        cond_channels = 5
+
     flow_model_cfg = config.get("flow_model", {}) or {}
     base_channels = int(flow_model_cfg.get("base_channels", 32))
     channel_mults = flow_model_cfg.get("channel_mults", [1, 2, 4])
@@ -166,13 +209,36 @@ def run_training(config_path: str, steps_override: int | None = None) -> None:
     channel_mults = tuple(int(v) for v in channel_mults)
     model = Vis2IRFlowUNet(
         in_channels=1,
-        cond_channels=3,
+        cond_channels=cond_channels,
         base_channels=base_channels,
         channel_mults=channel_mults,
     ).to(device)
-    run_logger.log_model_info(model, device)
+    phys_align = None
+    if phys_align_enabled:
+        phys_base_channels = int(phys_align_cfg.get("base_channels", 16))
+        phys_mults = phys_align_cfg.get("channel_mults", [1, 2, 4])
+        if not isinstance(phys_mults, (list, tuple)):
+            raise ValueError("'phys_align.channel_mults' must be a list of ints")
+        phys_mults = tuple(int(v) for v in phys_mults)
+        phys_t_min = float(phys_align_cfg.get("t_min", 1.0))
+        phys_t_max = float(phys_align_cfg.get("t_max", 10.0))
+        phys_align = Vis2PhysAlignUNet(
+            in_channels=3,
+            base_channels=phys_base_channels,
+            channel_mults=phys_mults,
+            t_min=phys_t_min,
+            t_max=phys_t_max,
+        ).to(device)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    log_model = model
+    if phys_align is not None:
+        log_model = nn.ModuleDict({"flow": model, "phys_align": phys_align})
+    run_logger.log_model_info(log_model, device)
+
+    params = list(model.parameters())
+    if phys_align is not None:
+        params += list(phys_align.parameters())
+    optimizer = torch.optim.Adam(params, lr=lr)
     scheduler = create_lr_scheduler(optimizer, config, steps)
 
     checkpoint_dir = os.path.join(runs_dir, "checkpoints")
@@ -226,7 +292,8 @@ def run_training(config_path: str, steps_override: int | None = None) -> None:
         t = torch.rand(vis.shape[0], device=device)
         x0 = torch.randn_like(ir)
         path_sample = path.sample(x_0=x0, x_1=ir, t=t)
-        pred = model(path_sample.x_t, t, cond=vis)
+        cond = _build_cond(vis, phys_align, cond_mode, t_cond_norm)
+        pred = model(path_sample.x_t, t, cond=cond)
         loss = nn.functional.mse_loss(pred, path_sample.dx_t)
 
         optimizer.zero_grad()
@@ -239,11 +306,14 @@ def run_training(config_path: str, steps_override: int | None = None) -> None:
 
         if vis_interval > 0 and step % vis_interval == 0:
             with torch.no_grad():
-                pred_ir = sample_ir(solver, vis, sampling_cfg).clamp(0.0, 1.0)
+                cond = _build_cond(vis, phys_align, cond_mode, t_cond_norm)
+                pred_ir = sample_ir(solver, cond, sampling_cfg).clamp(0.0, 1.0)
             _save_visualization(runs_dir, step, vis, ir, pred_ir)
 
         if eval_interval > 0 and eval_loader is not None and step % eval_interval == 0:
             model.eval()
+            if phys_align is not None:
+                phys_align.eval()
             total_psnr = 0.0
             total_ssim = 0.0
             total_samples = 0
@@ -251,7 +321,8 @@ def run_training(config_path: str, steps_override: int | None = None) -> None:
                 for eval_batch in eval_loader:
                     eval_vis = eval_batch["vis"].to(device)
                     eval_ir = eval_batch["ir"].to(device)
-                    pred_ir = sample_ir(solver, eval_vis, sampling_cfg).clamp(0.0, 1.0)
+                    cond = _build_cond(eval_vis, phys_align, cond_mode, t_cond_norm)
+                    pred_ir = sample_ir(solver, cond, sampling_cfg).clamp(0.0, 1.0)
                     batch_psnr = psnr(pred_ir, eval_ir).mean().item()
                     batch_ssim = ssim(pred_ir, eval_ir).mean().item()
                     batch_size = int(eval_ir.shape[0])
@@ -281,6 +352,8 @@ def run_training(config_path: str, steps_override: int | None = None) -> None:
                 "best_metric": best_metric,
                 "best_metric_mode": best_metric_mode,
             }
+            if phys_align is not None:
+                checkpoint["phys_align"] = phys_align.state_dict()
             checkpoint_path = os.path.join(checkpoint_dir, f"step_{step}.pt")
             torch.save(checkpoint, checkpoint_path)
             _prune_checkpoints(checkpoint_dir, max_checkpoints)
@@ -303,6 +376,8 @@ def run_training(config_path: str, steps_override: int | None = None) -> None:
                     )
                 )
             model.train()
+            if phys_align is not None:
+                phys_align.train()
 
 
 def parse_args() -> argparse.Namespace:
