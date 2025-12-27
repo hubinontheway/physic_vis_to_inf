@@ -30,6 +30,20 @@ def _pil_to_tensor(image) -> torch.Tensor:
     raise ValueError("Unsupported image array shape")
 
 
+def tensor_to_pil(tensor: torch.Tensor, mode: str):
+    try:
+        from PIL import Image
+    except ImportError as exc:
+        raise ImportError("Pillow is required for image saving") from exc
+    data = tensor.detach().cpu()
+    data = torch.clamp(data, 0.0, 1.0)
+    if mode == "RGB":
+        data = (data * 255.0).byte().permute(1, 2, 0).numpy()
+        return Image.fromarray(data, mode="RGB")
+    data = (data * 255.0).byte().squeeze(0).numpy()
+    return Image.fromarray(data, mode="L")
+
+
 def load_tensor_or_pil(path: str, mode: Optional[str] = None):
     if path.endswith(".pt"):
         tensor = torch.load(path, map_location="cpu")

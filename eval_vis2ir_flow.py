@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import os
+import time
 from typing import Dict
 
 import torch
@@ -14,7 +16,7 @@ from utils.device import resolve_device
 from utils.flow_sampling import build_solver, sample_ir
 from utils.metrics import psnr, ssim
 from utils.run_artifacts import find_best_checkpoint, find_latest_config, save_eval_metrics
-from utils.vision import load_tensor_or_pil, paired_transform
+from utils.vision import load_tensor_or_pil, paired_transform, tensor_to_pil
 
 
 def _load_checkpoint(model: torch.nn.Module, checkpoint_path: str, device: torch.device) -> None:
@@ -73,6 +75,10 @@ def run_eval(run_dir: str) -> Dict[str, float]:
 
     solver = build_solver(model)
     sampling_cfg = config.get("flow_sampling", {}) or {}
+    sampling_dir = os.path.join(run_dir, "sampling")
+    os.makedirs(sampling_dir, exist_ok=True)
+    sample_rows = []
+    sample_index = 0
 
     total_psnr = 0.0
     total_ssim = 0.0
@@ -83,7 +89,14 @@ def run_eval(run_dir: str) -> Dict[str, float]:
                 raise ValueError("Expected dataset batch with 'vis' and 'ir' tensors")
             vis = batch["vis"].to(device)
             ir = batch["ir"].to(device)
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+                torch.cuda.reset_peak_memory_stats(device)
+            start_time = time.perf_counter()
             pred_ir = sample_ir(solver, vis, sampling_cfg).clamp(0.0, 1.0)
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            elapsed = time.perf_counter() - start_time
             batch_psnr = psnr(pred_ir, ir).mean().item()
             batch_ssim = ssim(pred_ir, ir).mean().item()
             batch_size = int(ir.shape[0])
@@ -91,10 +104,39 @@ def run_eval(run_dir: str) -> Dict[str, float]:
             total_ssim += batch_ssim * batch_size
             total_samples += batch_size
 
+            per_image = elapsed / max(batch_size, 1)
+            peak_mb = None
+            if device.type == "cuda":
+                peak_bytes = torch.cuda.max_memory_allocated(device)
+                peak_mb = peak_bytes / (1024**2)
+            pred_cpu = pred_ir.detach().cpu()
+            for i in range(batch_size):
+                filename = f"sample_{sample_index:06d}.png"
+                path = os.path.join(sampling_dir, filename)
+                tensor_to_pil(pred_cpu[i], mode="L").save(path)
+                sample_rows.append(
+                    {
+                        "index": sample_index,
+                        "filename": filename,
+                        "seconds_per_image": round(per_image, 6),
+                        "cuda_peak_mb": "" if peak_mb is None else round(peak_mb, 3),
+                    }
+                )
+                sample_index += 1
+
     if total_samples == 0:
         raise ValueError("Evaluation loader returned no samples")
     metrics = {"psnr": total_psnr / total_samples, "ssim": total_ssim / total_samples}
     save_eval_metrics(run_dir, run_id, metrics, split=eval_split)
+    if sample_rows:
+        manifest_path = os.path.join(sampling_dir, "sampling_stats.csv")
+        with open(manifest_path, "w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=["index", "filename", "seconds_per_image", "cuda_peak_mb"],
+            )
+            writer.writeheader()
+            writer.writerows(sample_rows)
     return metrics
 
 
