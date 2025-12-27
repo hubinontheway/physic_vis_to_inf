@@ -3,23 +3,17 @@ from __future__ import annotations
 import argparse
 import os
 import random
-from typing import Dict, Iterator, Optional, Tuple
+from typing import Dict, Iterator, Tuple
 
 import torch
-from torch import nn
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 
-from losses.phys_losses import (
-    consistency_loss,
-    corr_loss,
-    emissivity_prior_loss,
-    recon_loss,
-    smoothness_loss,
-)
 from datasets import create_dataset
-from models.phys_decomp import PhysDecompNet
-from models.vit_unet_phys import PhysDecompViTUNet
+from models.phys_decomp_factory import create_phys_decomp_model
 from utils.config import load_yaml
+from utils.device import resolve_device
+from utils.phys_decomp_data import load_ir_sample, paired_transform
+from utils.phys_decomp_metrics import compute_losses, evaluate_model
 from utils.lr_schedule import create_lr_scheduler
 from utils.training_logger import TrainingRunLogger
 
@@ -156,123 +150,6 @@ def _prepare_batch(ir: torch.Tensor, size: int) -> Tuple[torch.Tensor, torch.Ten
     return v1, v2
 
 
-def _compute_losses(
-    v1: torch.Tensor,
-    v2: torch.Tensor,
-    t1: torch.Tensor,
-    eps1: torch.Tensor,
-    n1: Optional[torch.Tensor],
-    ir1_hat: torch.Tensor,
-    t2: torch.Tensor,
-    eps2: torch.Tensor,
-    n2: Optional[torch.Tensor],
-    ir2_hat: torch.Tensor,
-    weights: Dict[str, object],
-) -> Dict[str, torch.Tensor]:
-    """
-    Compute the weighted loss dictionary for two-view training/evaluation.
-    
-    Args:
-        v1 (torch.Tensor): Input view 1
-        v2 (torch.Tensor): Input view 2
-        t1 (torch.Tensor): Temperature prediction for view 1
-        eps1 (torch.Tensor): Emissivity prediction for view 1
-        n1 (Optional[torch.Tensor]): Noise prediction for view 1
-        ir1_hat (torch.Tensor): Reconstructed IR for view 1
-        t2 (torch.Tensor): Temperature prediction for view 2
-        eps2 (torch.Tensor): Emissivity prediction for view 2
-        n2 (Optional[torch.Tensor]): Noise prediction for view 2
-        ir2_hat (torch.Tensor): Reconstructed IR for view 2
-        weights (Dict[str, object]): Loss weight mapping
-        
-    Returns:
-        Dict[str, torch.Tensor]: Loss components including total
-    """
-    loss_recon = recon_loss(ir1_hat, v1) + recon_loss(ir2_hat, v2)
-    loss_t_smooth = smoothness_loss(t1) + smoothness_loss(t2)
-    loss_eps_prior = emissivity_prior_loss(eps1) + emissivity_prior_loss(eps2)
-    loss_consistency = consistency_loss(t1, t2, eps1, eps2, n1, n2)
-    loss_corr = corr_loss(t1, eps1) + corr_loss(t2, eps2)
-
-    total_loss = (
-        float(weights.get("recon", 1.0)) * loss_recon
-        + float(weights.get("t_smooth", 0.1)) * loss_t_smooth
-        + float(weights.get("eps_prior", 0.1)) * loss_eps_prior
-        + float(weights.get("consistency", 0.1)) * loss_consistency
-        + float(weights.get("corr", 0.05)) * loss_corr
-    )
-    return {
-        "total": total_loss,
-        "recon": loss_recon,
-        "t_smooth": loss_t_smooth,
-        "eps_prior": loss_eps_prior,
-        "consistency": loss_consistency,
-        "corr": loss_corr,
-    }
-
-
-def _evaluate_model(
-    model: nn.Module,
-    loader: DataLoader,
-    device: torch.device,
-    weights: Dict[str, object],
-) -> Dict[str, float]:
-    """
-    Run evaluation on a dataloader and return averaged metrics.
-    
-    Args:
-        model (nn.Module): Model to evaluate
-        loader (DataLoader): Evaluation dataloader
-        device (torch.device): Device to run on
-        weights (Dict[str, object]): Loss weight mapping
-        
-    Returns:
-        Dict[str, float]: Averaged metrics over the dataset
-    """
-    was_training = model.training
-    model.eval()
-    totals = {
-        "total": 0.0,
-        "recon": 0.0,
-        "t_smooth": 0.0,
-        "eps_prior": 0.0,
-        "consistency": 0.0,
-        "corr": 0.0,
-    }
-    total_samples = 0
-    with torch.no_grad():
-        for batch in loader:
-            if not isinstance(batch, dict) or "ir" not in batch:
-                raise ValueError("Expected dataset batch with 'ir' tensor")
-            ir = batch["ir"].to(device)
-            v1 = ir
-            v2 = ir
-            t1, eps1, n1, ir1_hat = model(v1)
-            t2, eps2, n2, ir2_hat = model(v2)
-            losses = _compute_losses(
-                v1,
-                v2,
-                t1,
-                eps1,
-                n1,
-                ir1_hat,
-                t2,
-                eps2,
-                n2,
-                ir2_hat,
-                weights,
-            )
-            batch_size = int(ir.shape[0])
-            for key in totals:
-                totals[key] += losses[key].item() * batch_size
-            total_samples += batch_size
-    if was_training:
-        model.train()
-    if total_samples == 0:
-        raise ValueError("Evaluation loader returned no samples")
-    return {key: value / total_samples for key, value in totals.items()}
-
-
 def _prune_checkpoints(checkpoint_dir: str, max_keep: int) -> None:
     """
     Keep only the most recent checkpoints (by modification time).
@@ -380,126 +257,6 @@ def _save_visualization(
     grid.save(os.path.join(output_dir, f"step_{step}.png"))
 
 
-def _pil_to_tensor(image) -> torch.Tensor:
-    """
-    Convert a PIL image to a PyTorch tensor.
-    
-    This function provides a fallback method for converting PIL images to tensors
-    without requiring NumPy.
-    
-    Args:
-        image: PIL image object
-        
-    Returns:
-        torch.Tensor: Converted tensor normalized to [0, 1] range
-    """
-    try:
-        import numpy as np
-    except ImportError:
-        # Fallback implementation without NumPy
-        data = torch.tensor(list(image.getdata()), dtype=torch.float32)
-        data = data.view(image.size[1], image.size[0])
-        return data.unsqueeze(0) / 255.0
-    # NumPy-based implementation
-    array = np.array(image, dtype="float32")
-    if array.ndim == 2:
-        return torch.from_numpy(array).unsqueeze(0) / 255.0
-    raise ValueError("Expected grayscale image")
-
-
-def _load_ir_sample(path: str, mode: Optional[str] = None):
-    """
-    Load an infrared image sample from path.
-    
-    This function can load both image files and tensor files, providing
-    flexibility in the data format.
-    
-    Args:
-        path (str): Path to the image or tensor file
-        mode (str, optional): PIL mode to convert to (ignored in this function)
-        
-    Returns:
-        torch.Tensor: Loaded image as a tensor normalized to [0, 1] range
-        
-    Raises:
-        ImportError: If trying to load image files without PIL
-        ValueError: If tensor file doesn't contain a tensor
-    """
-    _ = mode  # mode parameter is ignored
-    if path.endswith(".pt"):
-        # Load tensor file
-        tensor = torch.load(path, map_location="cpu")
-        if not isinstance(tensor, torch.Tensor):
-            raise ValueError(f"Expected tensor in {path}")
-        if tensor.dim() == 2:
-            tensor = tensor.unsqueeze(0)
-        return tensor.float()
-    # Load image file
-    try:
-        from PIL import Image
-    except ImportError as exc:
-        raise ImportError("Pillow is required to load image files") from exc
-    with Image.open(path) as img:
-        return img.convert("L")
-
-
-def _paired_transform(vis, ir, image_size: int) -> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    Transform visible and infrared images to specified size.
-    
-    This function ensures that both visible and infrared images are resized
-    to the target image size, handling both PIL images and tensor inputs.
-    
-    Args:
-        vis: Visible image (PIL Image or tensor)
-        ir: Infrared image (PIL Image or tensor)
-        image_size (int): Target size for both images
-        
-    Returns:
-        Tuple[torch.Tensor, torch.Tensor]: Resized visible and infrared tensors
-    """
-    try:
-        from PIL import Image
-    except ImportError:
-        Image = None
-
-    # Process infrared image
-    if Image is not None and isinstance(ir, Image.Image):
-        # If ir is a PIL image, resize and convert to tensor
-        if ir.size != (image_size, image_size):
-            ir = ir.resize((image_size, image_size), Image.BILINEAR)
-        ir_tensor = _pil_to_tensor(ir)
-    else:
-        # If ir is already a tensor, interpolate to target size
-        ir_tensor = ir
-        if ir_tensor.shape[-2:] != (image_size, image_size):
-            ir_tensor = nn.functional.interpolate(
-                ir_tensor.unsqueeze(0),
-                size=(image_size, image_size),
-                mode="bilinear",
-                align_corners=False,
-            ).squeeze(0)
-
-    # Process visible image
-    if Image is not None and isinstance(vis, Image.Image):
-        # If vis is a PIL image, resize and convert to tensor
-        if vis.size != (image_size, image_size):
-            vis = vis.resize((image_size, image_size), Image.BILINEAR)
-        vis_tensor = _pil_to_tensor(vis)
-    else:
-        # If vis is already a tensor, interpolate to target size
-        vis_tensor = vis
-        if vis_tensor.shape[-2:] != (image_size, image_size):
-            vis_tensor = nn.functional.interpolate(
-                vis_tensor.unsqueeze(0),
-                size=(image_size, image_size),
-                mode="bilinear",
-                align_corners=False,
-            ).squeeze(0)
-
-    return vis_tensor, ir_tensor
-
-
 def _validate_config(config: Dict[str, object]) -> None:
     """
     Validate the training configuration dictionary.
@@ -532,63 +289,6 @@ def _validate_config(config: Dict[str, object]) -> None:
     if isinstance(lr_schedule, dict) and "type" in lr_schedule:
         if not isinstance(lr_schedule["type"], str):
             raise ValueError("'lr_schedule.type' must be a string")
-
-
-def _resolve_device(config: Dict[str, object]) -> torch.device:
-    """
-    Resolve the training device from configuration.
-
-    Args:
-        config (Dict[str, object]): Training configuration dictionary
-
-    Returns:
-        torch.device: Selected device for training
-    """
-    device_value = config.get("device")
-    if device_value is None:
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    if isinstance(device_value, int):
-        device_str = f"cuda:{device_value}"
-    else:
-        device_str = str(device_value)
-
-    try:
-        device = torch.device(device_str)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"Invalid device '{device_value}'") from exc
-
-    if device.type == "cuda":
-        if not torch.cuda.is_available():
-            raise ValueError("CUDA device requested but CUDA is not available")
-        if device.index is not None:
-            count = torch.cuda.device_count()
-            if device.index < 0 or device.index >= count:
-                raise ValueError(
-                    f"CUDA device index {device.index} out of range "
-                    f"(device_count={count})"
-                )
-            torch.cuda.set_device(device.index)
-    return device
-
-
-def _ensure_timm_available() -> None:
-    """
-    Ensure that the timm library is available.
-    
-    This function checks if timm is installed and raises an ImportError if not.
-    It's used when the ViT-UNet model is configured to use timm models.
-    
-    Raises:
-        ImportError: If timm is not installed
-    """
-    try:
-        import timm  # noqa: F401
-    except ImportError as exc:
-        raise ImportError(
-            "timm is required for model_type=vit_unet with use_timm=true. "
-            "Install with `pip install timm`."
-        ) from exc
 
 
 def run_training(config_path: str, steps_override: int | None = None) -> None:
@@ -637,7 +337,7 @@ def run_training(config_path: str, steps_override: int | None = None) -> None:
     torch.manual_seed(seed)
 
     # Determine device (GPU if available, otherwise CPU), with config override
-    device = _resolve_device(config)
+    device = resolve_device(config)
     
     runs_dir = os.path.join("runs", "phys_decomp")
     run_logger = TrainingRunLogger.create(runs_dir, config_path)
@@ -651,8 +351,8 @@ def run_training(config_path: str, steps_override: int | None = None) -> None:
         dataset_name,
         root=dataset_root,
         split=split,
-        loader=_load_ir_sample,
-        transform=lambda v, r: _paired_transform(v, r, image_size),
+        loader=load_ir_sample,
+        transform=lambda v, r: paired_transform(v, r, image_size),
         vis_mode="L",
         ir_mode="L",
     )
@@ -661,37 +361,14 @@ def run_training(config_path: str, steps_override: int | None = None) -> None:
     iterator: Iterator[torch.Tensor] = iter(loader)
 
     # Initialize the model based on configuration
-    model_type = str(config.get("model_type", "cnn")).lower()
-    if model_type == "vit_unet":
-        vit_cfg = config.get("vit_unet", {})
-        if not isinstance(vit_cfg, dict):
-            raise ValueError("'vit_unet' must be a mapping")
-        if bool(vit_cfg.get("use_timm", False)):
-            _ensure_timm_available()
-        model = PhysDecompViTUNet(
-            in_channels=1,
-            base_channels=int(vit_cfg.get("base_channels", 32)),
-            vit_embed_dim=int(vit_cfg.get("vit_embed_dim", 256)),
-            vit_depth=int(vit_cfg.get("vit_depth", 6)),
-            vit_heads=int(vit_cfg.get("vit_heads", 8)),
-            patch_size=int(vit_cfg.get("patch_size", 16)),
-            image_size=image_size,
-            t_min=t_min,
-            t_max=t_max,
-            use_noise=use_noise,
-            use_mlp=bool(vit_cfg.get("use_mlp", False)),
-            use_timm=bool(vit_cfg.get("use_timm", False)),
-            timm_model=str(vit_cfg.get("timm_model", "vit_base_patch16_224")),
-            timm_pretrained=bool(vit_cfg.get("timm_pretrained", False)),
-        ).to(device)
-    else:
-        model = PhysDecompNet(
-            in_channels=1,
-            base_channels=32,
-            t_min=t_min,
-            t_max=t_max,
-            use_noise=use_noise,
-        ).to(device)
+    model = create_phys_decomp_model(
+        config=config,
+        image_size=image_size,
+        t_min=t_min,
+        t_max=t_max,
+        use_noise=use_noise,
+        device=device,
+    )
 
     run_logger.log_model_info(model, device)
     
@@ -719,8 +396,8 @@ def run_training(config_path: str, steps_override: int | None = None) -> None:
             dataset_name,
             root=dataset_root,
             split=eval_split,
-            loader=_load_ir_sample,
-            transform=lambda v, r: _paired_transform(v, r, image_size),
+            loader=load_ir_sample,
+            transform=lambda v, r: paired_transform(v, r, image_size),
             vis_mode="L",
             ir_mode="L",
         )
@@ -757,7 +434,7 @@ def run_training(config_path: str, steps_override: int | None = None) -> None:
         t1, eps1, n1, ir1_hat = model(v1)
         t2, eps2, n2, ir2_hat = model(v2)
 
-        losses = _compute_losses(
+        losses = compute_losses(
             v1,
             v2,
             t1,
@@ -797,7 +474,7 @@ def run_training(config_path: str, steps_override: int | None = None) -> None:
             _save_visualization(runs_dir, step, v1, ir1_hat, t1, eps1)
 
         if eval_interval > 0 and eval_loader is not None and step % eval_interval == 0:
-            metrics = _evaluate_model(model, eval_loader, device, weights)
+            metrics = evaluate_model(model, eval_loader, device, weights)
             print(
                 "eval step={step} total={total:.4f} recon={recon:.4f} t_smooth={t_smooth:.4f} "
                 "eps_prior={eps_prior:.4f} consistency={consistency:.4f} corr={corr:.4f}".format(

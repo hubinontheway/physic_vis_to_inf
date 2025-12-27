@@ -10,12 +10,11 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from flow_matching.path import CondOTProbPath
-from flow_matching.solver import ODESolver
-from flow_matching.utils import ModelWrapper
-
 from datasets import create_dataset
 from models.vis2ir_flow import Vis2IRFlowUNet
 from utils.config import load_yaml
+from utils.device import resolve_device
+from utils.flow_sampling import build_solver, sample_ir
 from utils.lr_schedule import create_lr_scheduler
 from utils.metrics import psnr, ssim
 from utils.training_logger import TrainingRunLogger
@@ -39,35 +38,6 @@ def _validate_config(config: Dict[str, object]) -> None:
     flow_sampling = config.get("flow_sampling", {})
     if flow_sampling is not None and not isinstance(flow_sampling, dict):
         raise ValueError("'flow_sampling' must be a mapping")
-
-
-def _resolve_device(config: Dict[str, object]) -> torch.device:
-    device_value = config.get("device")
-    if device_value is None:
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    if isinstance(device_value, int):
-        device_str = f"cuda:{device_value}"
-    else:
-        device_str = str(device_value)
-
-    try:
-        device = torch.device(device_str)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"Invalid device '{device_value}'") from exc
-
-    if device.type == "cuda":
-        if not torch.cuda.is_available():
-            raise ValueError("CUDA device requested but CUDA is not available")
-        if device.index is not None:
-            count = torch.cuda.device_count()
-            if device.index < 0 or device.index >= count:
-                raise ValueError(
-                    f"CUDA device index {device.index} out of range "
-                    f"(device_count={count})"
-                )
-            torch.cuda.set_device(device.index)
-    return device
 
 
 def _prune_checkpoints(checkpoint_dir: str, max_keep: int) -> None:
@@ -139,37 +109,6 @@ def _save_visualization(
     grid.save(os.path.join(output_dir, f"step_{step}.png"))
 
 
-class _ConditionalVelocityWrapper(ModelWrapper):
-    def forward(self, x: torch.Tensor, t: torch.Tensor, **extras) -> torch.Tensor:
-        cond = extras.get("cond")
-        if cond is None:
-            raise ValueError("cond must be provided for conditional sampling")
-        return self.model(x=x, t=t, cond=cond)
-
-
-def _sample_ir(
-    solver: ODESolver,
-    cond: torch.Tensor,
-    sampling_cfg: Dict[str, object],
-) -> torch.Tensor:
-    steps = int(sampling_cfg.get("steps", 50))
-    method = str(sampling_cfg.get("method", "euler"))
-    step_size = float(sampling_cfg.get("step_size", 1.0 / max(steps, 1)))
-    atol = float(sampling_cfg.get("atol", 1e-5))
-    rtol = float(sampling_cfg.get("rtol", 1e-5))
-    time_grid = torch.tensor([0.0, 1.0], device=cond.device)
-    x_init = torch.randn(cond.shape[0], 1, cond.shape[-2], cond.shape[-1], device=cond.device)
-    return solver.sample(
-        x_init=x_init,
-        step_size=step_size,
-        method=method,
-        atol=atol,
-        rtol=rtol,
-        time_grid=time_grid,
-        cond=cond,
-    )
-
-
 def run_training(config_path: str, steps_override: int | None = None) -> None:
     config = load_yaml(config_path)
     if not isinstance(config, dict):
@@ -194,7 +133,7 @@ def run_training(config_path: str, steps_override: int | None = None) -> None:
     random.seed(seed)
     torch.manual_seed(seed)
 
-    device = _resolve_device(config)
+    device = resolve_device(config)
     runs_dir = os.path.join("runs", "vis2ir_flow")
     run_logger = TrainingRunLogger.create(
         runs_dir,
@@ -264,7 +203,7 @@ def run_training(config_path: str, steps_override: int | None = None) -> None:
         )
 
     path = CondOTProbPath()
-    solver = ODESolver(_ConditionalVelocityWrapper(model))
+    solver = build_solver(model)
     sampling_cfg = config.get("flow_sampling", {}) or {}
 
     for step in range(1, steps + 1):
@@ -299,7 +238,7 @@ def run_training(config_path: str, steps_override: int | None = None) -> None:
 
         if vis_interval > 0 and step % vis_interval == 0:
             with torch.no_grad():
-                pred_ir = _sample_ir(solver, vis, sampling_cfg).clamp(0.0, 1.0)
+                pred_ir = sample_ir(solver, vis, sampling_cfg).clamp(0.0, 1.0)
             _save_visualization(runs_dir, step, vis, ir, pred_ir)
 
         if eval_interval > 0 and eval_loader is not None and step % eval_interval == 0:
@@ -311,7 +250,7 @@ def run_training(config_path: str, steps_override: int | None = None) -> None:
                 for eval_batch in eval_loader:
                     eval_vis = eval_batch["vis"].to(device)
                     eval_ir = eval_batch["ir"].to(device)
-                    pred_ir = _sample_ir(solver, eval_vis, sampling_cfg).clamp(0.0, 1.0)
+                    pred_ir = sample_ir(solver, eval_vis, sampling_cfg).clamp(0.0, 1.0)
                     batch_psnr = psnr(pred_ir, eval_ir).mean().item()
                     batch_ssim = ssim(pred_ir, eval_ir).mean().item()
                     batch_size = int(eval_ir.shape[0])

@@ -1,0 +1,120 @@
+from __future__ import annotations
+
+import argparse
+import os
+from typing import Dict
+
+import torch
+from torch.utils.data import DataLoader
+
+from datasets import create_dataset
+from models.vis2ir_flow import Vis2IRFlowUNet
+from utils.config import load_yaml
+from utils.device import resolve_device
+from utils.flow_sampling import build_solver, sample_ir
+from utils.metrics import psnr, ssim
+from utils.run_artifacts import find_best_checkpoint, find_latest_config, save_eval_metrics
+from utils.vision import load_tensor_or_pil, paired_transform
+
+
+def _load_checkpoint(model: torch.nn.Module, checkpoint_path: str, device: torch.device) -> None:
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    if isinstance(checkpoint, dict) and "model" in checkpoint:
+        state = checkpoint["model"]
+    else:
+        state = checkpoint
+    model.load_state_dict(state, strict=True)
+
+
+def run_eval(run_dir: str) -> Dict[str, float]:
+    config_path, run_id = find_latest_config(run_dir)
+    config = load_yaml(config_path)
+    if not isinstance(config, dict):
+        raise ValueError("train config must be a mapping")
+
+    image_size = int(config["image_size"])
+    batch_size = int(config.get("eval_batch_size", config.get("batch_size", 1)))
+    eval_split = str(config.get("eval_split", "test"))
+    seed = int(config.get("seed", 123))
+    torch.manual_seed(seed)
+
+    device = resolve_device(config)
+
+    dataset_name = str(config["dataset"])
+    data_root = str(config.get("data_root", "/data2/hubin/datasets"))
+    dataset_root = str(config.get("dataset_root", os.path.join(data_root, dataset_name)))
+
+    dataset = create_dataset(
+        dataset_name,
+        root=dataset_root,
+        split=eval_split,
+        loader=load_tensor_or_pil,
+        transform=lambda v, r: paired_transform(v, r, image_size),
+        vis_mode="RGB",
+        ir_mode="L",
+    )
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, drop_last=False)
+
+    flow_model_cfg = config.get("flow_model", {}) or {}
+    base_channels = int(flow_model_cfg.get("base_channels", 32))
+    channel_mults = flow_model_cfg.get("channel_mults", [1, 2, 4])
+    if not isinstance(channel_mults, (list, tuple)):
+        raise ValueError("'flow_model.channel_mults' must be a list of ints")
+    channel_mults = tuple(int(v) for v in channel_mults)
+    model = Vis2IRFlowUNet(
+        in_channels=1,
+        cond_channels=3,
+        base_channels=base_channels,
+        channel_mults=channel_mults,
+    ).to(device)
+    checkpoint_path = find_best_checkpoint(run_dir)
+    _load_checkpoint(model, checkpoint_path, device)
+    model.eval()
+
+    solver = build_solver(model)
+    sampling_cfg = config.get("flow_sampling", {}) or {}
+
+    total_psnr = 0.0
+    total_ssim = 0.0
+    total_samples = 0
+    with torch.no_grad():
+        for batch in loader:
+            if not isinstance(batch, dict) or "vis" not in batch or "ir" not in batch:
+                raise ValueError("Expected dataset batch with 'vis' and 'ir' tensors")
+            vis = batch["vis"].to(device)
+            ir = batch["ir"].to(device)
+            pred_ir = sample_ir(solver, vis, sampling_cfg).clamp(0.0, 1.0)
+            batch_psnr = psnr(pred_ir, ir).mean().item()
+            batch_ssim = ssim(pred_ir, ir).mean().item()
+            batch_size = int(ir.shape[0])
+            total_psnr += batch_psnr * batch_size
+            total_ssim += batch_ssim * batch_size
+            total_samples += batch_size
+
+    if total_samples == 0:
+        raise ValueError("Evaluation loader returned no samples")
+    metrics = {"psnr": total_psnr / total_samples, "ssim": total_ssim / total_samples}
+    save_eval_metrics(run_dir, run_id, metrics, split=eval_split)
+    return metrics
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Evaluate flow-matching vis2ir model"
+    )
+    parser.add_argument(
+        "--run-dir",
+        default=os.path.join("runs", "vis2ir_flow"),
+        help="Run directory containing config_*.yml and checkpoints/",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    metrics = run_eval(args.run_dir)
+    print("eval psnr={psnr:.4f} ssim={ssim:.4f}".format(**metrics))
+
+
+if __name__ == "__main__":
+    main()
