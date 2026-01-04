@@ -65,28 +65,9 @@ def run_eval(run_dir: str) -> Dict[str, float]:
 
     # 4. Load Lightning Model
     checkpoint_path = find_best_checkpoint(run_dir)
-    # We use load_from_checkpoint which is the standard Lightning way
-    # We need to provide components that were passed to __init__ if they aren't saved in hparams
-    # In our case, phys_align_model is needed if enabled.
-    
-    # We first instantiate the components as we did in training
-    from models.vis2phys_align import Vis2PhysAlignUNet
-    phys_align_cfg = config.get("phys_align", {}) or {}
-    phys_align_model = None
-    if phys_align_cfg.get("enabled", False):
-        phys_align_model = Vis2PhysAlignUNet(
-            in_channels=3,
-            base_channels=int(phys_align_cfg.get("base_channels", 16)),
-            channel_mults=tuple(int(v) for v in phys_align_cfg.get("channel_mults", [1, 2, 4])),
-            t_min=float(phys_align_cfg.get("t_min", 1.0)),
-            t_max=float(phys_align_cfg.get("t_max", 10.0)),
-        )
-
-    # Load the wrapper module
     pl_model = Vis2IRFlowLightning.load_from_checkpoint(
         checkpoint_path,
         config=config,
-        phys_align_model=phys_align_model,
         map_location=device
     )
     pl_model.to(device)
@@ -115,8 +96,7 @@ def run_eval(run_dir: str) -> Dict[str, float]:
             
             start_time = time.perf_counter()
             
-            # Use the lightning module's methods for consistency
-            cond = pl_model._build_cond(vis, return_phys=False)
+            cond = pl_model._build_cond(vis)
             pred_ir = sample_ir(pl_model.solver, cond, sampling_cfg).clamp(0.0, 1.0)
             
             if device.type == "cuda":

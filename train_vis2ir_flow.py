@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import os
-from typing import Dict, Any, Optional
 
 import pytorch_lightning as pl
 import torch
@@ -11,11 +10,8 @@ from pytorch_lightning.loggers import TensorBoardLogger
 from torch.utils.data import DataLoader
 
 from datasets import create_dataset
-from models.phys_decomp_factory import create_phys_decomp_model
 from models.vis2ir_flow_pl import Vis2IRFlowLightning
-from models.vis2phys_align import Vis2PhysAlignUNet
 from utils.config import load_yaml
-from utils.run_artifacts import find_best_checkpoint, find_latest_config
 from utils.vision import load_tensor_or_pil, paired_transform
 
 
@@ -38,7 +34,7 @@ class ImageLogger(Callback):
 
         # Generate
         with torch.no_grad():
-            cond = pl_module._build_cond(vis, return_phys=False)
+            cond = pl_module._build_cond(vis)
             sampling_cfg = pl_module.config.get("flow_sampling", {})
             pred_ir = pl_module.solver.sample(
                 x_init=torch.randn_like(ir), 
@@ -64,51 +60,6 @@ class ImageLogger(Callback):
             grid_image = make_grid(grid, nrow=1)
             
             writer.add_image("val/samples", grid_image, trainer.global_step)
-
-
-def _load_phys_teacher(
-    teacher_cfg: Dict[str, Any],
-    device: torch.device,
-    fallback_image_size: int,
-) -> torch.nn.Module:
-    """Loads a pre-trained physics decomposition teacher model."""
-    run_dir = teacher_cfg.get("run_dir")
-    config_path = teacher_cfg.get("config_path")
-    if config_path is None and run_dir:
-        config_path, _ = find_latest_config(str(run_dir))
-    if config_path is None:
-        raise ValueError("phys_align.teacher requires config_path or run_dir")
-
-    config = load_yaml(str(config_path))
-    image_size = int(teacher_cfg.get("image_size", config.get("image_size", fallback_image_size)))
-    t_min = float(teacher_cfg.get("t_min", config.get("t_min", 1.0)))
-    t_max = float(teacher_cfg.get("t_max", config.get("t_max", 10.0)))
-    use_noise = bool(teacher_cfg.get("use_noise", config.get("use_noise", True)))
-
-    model = create_phys_decomp_model(
-        config=config,
-        image_size=image_size,
-        t_min=t_min,
-        t_max=t_max,
-        use_noise=use_noise,
-        device=device,
-    )
-
-    checkpoint_path = teacher_cfg.get("checkpoint")
-    if checkpoint_path is None and run_dir:
-        checkpoint_path = find_best_checkpoint(str(run_dir))
-    if checkpoint_path is None:
-        raise ValueError("phys_align.teacher requires checkpoint or run_dir")
-
-    # Load state dict
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-    state_dict = checkpoint["model"] if "model" in checkpoint else checkpoint
-    model.load_state_dict(state_dict, strict=True)
-    
-    model.eval()
-    for param in model.parameters():
-        param.requires_grad = False
-    return model
 
 
 def main():
@@ -165,32 +116,8 @@ def main():
         pin_memory=True
     )
 
-    # --- Models ---
-    # 1. Phys Align Model (if enabled)
-    phys_align_cfg = config.get("phys_align", {}) or {}
-    phys_align_model = None
-    if phys_align_cfg.get("enabled", False):
-        phys_align_model = Vis2PhysAlignUNet(
-            in_channels=3,
-            base_channels=int(phys_align_cfg.get("base_channels", 16)),
-            channel_mults=tuple(int(v) for v in phys_align_cfg.get("channel_mults", [1, 2, 4])),
-            t_min=float(phys_align_cfg.get("t_min", 1.0)),
-            t_max=float(phys_align_cfg.get("t_max", 10.0)),
-        )
-
-    # 2. Teacher Model (if enabled)
-    teacher_cfg = phys_align_cfg.get("teacher", {}) or {}
-    teacher_model = None
-    if teacher_cfg.get("enabled", False):
-        # Note: We load it to CPU first, Lightning will move it to GPU
-        teacher_model = _load_phys_teacher(teacher_cfg, torch.device("cpu"), image_size)
-
-    # Lightning Module
-    model = Vis2IRFlowLightning(
-        config=config,
-        phys_align_model=phys_align_model,
-        teacher_model=teacher_model
-    )
+    # --- Model ---
+    model = Vis2IRFlowLightning(config=config)
 
     # --- Callbacks & Logger ---
     config_name = os.path.splitext(os.path.basename(args.config))[0]
