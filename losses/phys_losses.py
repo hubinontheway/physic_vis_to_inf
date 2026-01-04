@@ -5,48 +5,31 @@ from typing import Dict, Optional
 import torch
 from torch import nn
 from torch.nn import functional as F
+try:
+    import kornia
+except ImportError:
+    kornia = None
 
 
 def recon_loss(ir_hat: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     """
     Reconstruction loss using L1 norm.
-    
-    This loss measures the pixel-wise difference between the reconstructed 
-    infrared image (ir_hat) and the target image. It encourages the model 
-    to generate images that closely match the input.
-    
-    Args:
-        ir_hat (torch.Tensor): Reconstructed infrared image
-        target (torch.Tensor): Target infrared image
-        
-    Returns:
-        torch.Tensor: Scalar loss value representing the average absolute difference
+    Uses standard PyTorch functional API.
     """
-    return torch.mean(torch.abs(ir_hat - target))
+    return F.l1_loss(ir_hat, target, reduction='mean')
 
 
 def smoothness_loss(tensor: torch.Tensor) -> torch.Tensor:
     """
     Smoothness loss based on total variation (TV).
-    
-    This loss penalizes large spatial variations in the tensor, encouraging
-    smoothness. It's particularly useful for temperature maps where we expect
-    spatial continuity.
-    
-    The loss is calculated as the sum of absolute gradients in horizontal 
-    and vertical directions.
-    
-    Args:
-        tensor (torch.Tensor): Input tensor to compute smoothness for
-        
-    Returns:
-        torch.Tensor: Scalar loss value representing the total variation
+    Uses Kornia if available, falls back to manual implementation.
     """
-    # Calculate vertical gradients: difference between adjacent rows
+    if kornia is not None:
+        return kornia.losses.total_variation(tensor, reduction='mean')
+    
+    # Fallback implementation
     dy = torch.abs(tensor[:, :, 1:, :] - tensor[:, :, :-1, :])
-    # Calculate horizontal gradients: difference between adjacent columns
     dx = torch.abs(tensor[:, :, :, 1:] - tensor[:, :, :, :-1])
-    # Return sum of average gradients in both directions
     return torch.mean(dx) + torch.mean(dy)
 
 
