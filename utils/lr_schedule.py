@@ -1,95 +1,77 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Dict, Optional, Union
 
 import torch
 from torch.optim import Optimizer
+from torch.optim.lr_scheduler import LambdaLR
 
 
-def _clamp_steps(value: int, total_steps: int) -> int:
-    if value < 0:
-        raise ValueError("warmup_steps must be >= 0")
-    return min(value, max(total_steps, 0))
-
-
-def _parse_schedule_config(config: Dict[str, object]) -> Optional[Dict[str, object]]:
-    schedule = config.get("lr_schedule")
-    if schedule is None:
-        return None
-    if isinstance(schedule, str):
-        return {"type": schedule}
-    if isinstance(schedule, dict):
-        return schedule
-    raise ValueError("'lr_schedule' must be a string or mapping")
-
-
-@dataclass
-class WarmupCosineScheduler:
-    optimizer: Optimizer
-    total_steps: int
-    warmup_steps: int
-    min_lr: float
-
-    def __post_init__(self) -> None:
-        self.base_lrs = [group["lr"] for group in self.optimizer.param_groups]
-
-    def step(self, step: int) -> None:
-        if self.total_steps <= 0:
-            return
-        warmup_steps = _clamp_steps(self.warmup_steps, self.total_steps)
-        for group, base_lr in zip(self.optimizer.param_groups, self.base_lrs):
-            group["lr"] = _compute_warmup_cosine_lr(
-                base_lr=base_lr,
-                step=step,
-                total_steps=self.total_steps,
-                warmup_steps=warmup_steps,
-                min_lr=self.min_lr,
-            )
-
-
-def _compute_warmup_cosine_lr(
-    *,
-    base_lr: float,
-    step: int,
-    total_steps: int,
+def _get_warmup_cosine_lambda(
     warmup_steps: int,
-    min_lr: float,
-) -> float:
-    if total_steps <= 0:
-        return base_lr
-    if step <= 0:
-        return base_lr
-    if warmup_steps > 0 and step <= warmup_steps:
-        return base_lr * (step / float(warmup_steps))
-    decay_steps = max(total_steps - warmup_steps, 1)
-    progress = min((step - warmup_steps) / float(decay_steps), 1.0)
-    cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
-    return min_lr + (base_lr - min_lr) * cosine
+    total_steps: int,
+    min_lr_ratio: float = 0.0,
+):
+    """
+    Returns a lambda function for LambdaLR that implements warmup + cosine decay.
+    """
+    def lr_lambda(current_step: int):
+        # Warmup phase
+        if current_step < warmup_steps:
+            return float(current_step) / float(max(1, warmup_steps))
+        
+        # Cosine decay phase
+        progress = float(current_step - warmup_steps) / float(max(1, total_steps - warmup_steps))
+        progress = min(max(progress, 0.0), 1.0) # Clip to [0, 1]
+        cosine_decay = 0.5 * (1.0 + math.cos(math.pi * progress))
+        
+        # Scale to range [min_lr_ratio, 1.0]
+        return min_lr_ratio + (1.0 - min_lr_ratio) * cosine_decay
+
+    return lr_lambda
 
 
 def create_lr_scheduler(
     optimizer: Optimizer,
     config: Dict[str, object],
     total_steps: int,
-) -> Optional[WarmupCosineScheduler]:
-    schedule = _parse_schedule_config(config)
-    if schedule is None:
+) -> Optional[LambdaLR]:
+    """
+    Creates a standard PyTorch LambdaLR scheduler for warmup cosine decay.
+    """
+    schedule_cfg = config.get("lr_schedule")
+    if schedule_cfg is None:
         return None
-    schedule_type = str(schedule.get("type", "cosine")).lower()
-    if schedule_type in {"none", "off", "false"}:
-        return None
-    if schedule_type != "cosine":
+        
+    if isinstance(schedule_cfg, str):
+        schedule_type = schedule_cfg
+        schedule_params = {}
+    elif isinstance(schedule_cfg, dict):
+        schedule_type = schedule_cfg.get("type", "cosine")
+        schedule_params = schedule_cfg
+    else:
+        raise ValueError("'lr_schedule' must be a string or mapping")
+
+    if str(schedule_type).lower() not in {"cosine"}:
+        # Return None or raise error depending on strictness. 
+        # Original code returned None for "none", "off", "false".
+        if str(schedule_type).lower() in {"none", "off", "false"}:
+            return None
         raise ValueError(f"Unsupported lr_schedule type '{schedule_type}'")
 
-    warmup_steps = int(schedule.get("warmup_steps", 0))
-    min_lr = float(schedule.get("min_lr", 0.0))
-    if min_lr < 0.0:
-        raise ValueError("min_lr must be >= 0")
-    return WarmupCosineScheduler(
-        optimizer=optimizer,
-        total_steps=int(total_steps),
-        warmup_steps=warmup_steps,
-        min_lr=min_lr,
-    )
+    warmup_steps = int(schedule_params.get("warmup_steps", 0))
+    min_lr = float(schedule_params.get("min_lr", 0.0))
+    
+    # Calculate min_lr_ratio assuming all param groups have same base LR effectively
+    # Or just relative to the initial LR provided in optimizer.
+    # Typically min_lr is an absolute value in config, but LambdaLR works on multiplicative factor.
+    # To support absolute min_lr correctly with LambdaLR, we need base_lr from optimizer.
+    # However, optimizers can have multiple param groups.
+    # A safe approximation if we assume base_lr > min_lr:
+    base_lr = optimizer.param_groups[0]["lr"]
+    min_lr_ratio = min_lr / base_lr if base_lr > 0 else 0.0
+
+    lr_lambda = _get_warmup_cosine_lambda(warmup_steps, total_steps, min_lr_ratio)
+    
+    return LambdaLR(optimizer, lr_lambda)
