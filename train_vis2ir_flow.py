@@ -12,6 +12,7 @@ from torch.utils.data import DataLoader
 from datasets import create_dataset
 from models.vis2ir_flow_pl import Vis2IRFlowLightning
 from utils.config import load_yaml
+from utils.flow_sampling import sample_ir
 from utils.vision import load_tensor_or_pil, paired_transform
 
 
@@ -35,12 +36,8 @@ class ImageLogger(Callback):
         # Generate
         with torch.no_grad():
             cond = pl_module._build_cond(vis)
-            sampling_cfg = pl_module.config.get("flow_sampling", {})
-            pred_ir = pl_module.solver.sample(
-                x_init=torch.randn_like(ir), 
-                cond=cond, 
-                steps=sampling_cfg.get("steps", 50) # Fallback default
-            ).clamp(0.0, 1.0)
+            sampling_cfg = pl_module.config.get("flow_sampling", {}) or {}
+            pred_ir = sample_ir(pl_module.solver, cond, sampling_cfg).clamp(0.0, 1.0)
 
         # Log images to TensorBoard
         # Create a grid: Vis | GT IR | Pred IR
