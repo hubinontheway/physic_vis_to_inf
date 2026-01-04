@@ -13,11 +13,11 @@ eval_batch_size: 4 # 测试时的批大小（默认与 batch_size 相同）。
 best_metric: psnr # 评估指标，用于保存 best model。
 best_metric_mode: max # best_metric 取最小还是最大（min/max）。
 max_checkpoints: 5 # 最多保留的最近权重数量（上限 5）。
-dataset: VEDIA # 数据集名称，传给 create_dataset（如 VEDIA）。
+dataset: M3FD_Detection # 数据集名称，传给 create_dataset（如 VEDIA）。
 split: train # 数据集划分（train/test）。
 data_root: /data2/hubin/datasets # 默认数据集根目录；未指定 dataset_root 时使用。
 seed: 123 # 随机种子，用于控制增强与采样的可重复性。
-device: cuda:5 # 训练设备；可设为 "cuda:1" 或 "cpu"，留空则自动选择。
+device: cuda:4 # 训练设备；可设为 "cuda:1" 或 "cpu"，留空则自动选择。
 flow_model: # Flow Matching 模型配置。
   base_channels: 32 # 基础通道数。
   channel_mults: [1, 2, 4] # UNet 通道倍率。
@@ -28,9 +28,17 @@ flow_sampling: # 采样配置（用于评估/可视化）。
   rtol: 0.00001 # ODE 相对误差容忍度。
 phys_align: # 物理属性对齐模块（可选）。
   enabled: false # 启用后会用 vis -> (T, eps) 作为 flow 条件输入。
-  cond_mode: vis_phys # vis / phys / vis_phys（推荐 vis_phys，避免退化）。
+  cond_mode: vis # vis / phys / vis_phys（推荐 vis_phys，避免退化）。
   base_channels: 16 # 对齐模块基础通道数（轻量优先）。
   channel_mults: [1, 2, 4] # 对齐模块通道倍率。
   t_min: 1.0 # 温度下限（与物理解耦一致）。
   t_max: 10.0 # 温度上限（与物理解耦一致）。
   t_cond_norm: true # 是否将温度归一化到 [0, 1] 再喂入 flow。
+teacher: # 使用已训练的物理解耦模型监督 vis->(T, eps)。
+  enabled: false # 是否启用物理教师监督。
+  run_dir: runs/phys_decomp # 物理解耦训练 run 目录（可选）。
+  config_path: configs/phys_decomp.yml # 物理解耦配置（若 run_dir 无 config_*.yml）。
+  checkpoint: runs/phys_decomp/checkpoints/best.pt # 物理解耦权重（若 run_dir 不含 best.pt）。
+  loss_weight: 0.2 # 物理监督损失权重。
+  t_weight: 1.0 # 温度监督权重。
+  eps_weight: 1.0 # 发射率监督权重。
