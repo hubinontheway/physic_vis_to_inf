@@ -1,6 +1,9 @@
 import os
 
 
+from torch.utils.data import Dataset
+
+
 def default_image_loader(path, mode=None):
     """
     Default image loader using PIL.
@@ -33,7 +36,7 @@ def default_image_loader(path, mode=None):
         return img
 
 
-class PairedImageDataset:
+class PairedImageDataset(Dataset):
     """
     Base dataset for paired visible/infrared images.
     
