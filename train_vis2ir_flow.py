@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 
 import pytorch_lightning as pl
@@ -143,6 +144,22 @@ def main():
     # --- Trainer ---
     # Accelerate config: check if CUDA is available
     accelerator = "gpu" if torch.cuda.is_available() else "cpu"
+
+    num_train_batches = len(train_loader)
+    if num_train_batches <= 0:
+        raise ValueError("Training loader is empty; cannot determine validation interval")
+    if val_interval <= 0:
+        val_check_interval = 1.0
+        check_val_every_n_epoch = 1
+        limit_val_batches = 0.0
+    elif val_interval <= num_train_batches:
+        val_check_interval = val_interval
+        check_val_every_n_epoch = 1
+        limit_val_batches = 1.0
+    else:
+        val_check_interval = num_train_batches
+        check_val_every_n_epoch = max(1, math.ceil(val_interval / num_train_batches))
+        limit_val_batches = 1.0
     
     trainer = pl.Trainer(
         accelerator=accelerator,
@@ -150,7 +167,9 @@ def main():
         max_steps=max_steps,
         logger=logger,
         callbacks=callbacks,
-        val_check_interval=val_interval,
+        val_check_interval=val_check_interval,
+        check_val_every_n_epoch=check_val_every_n_epoch,
+        limit_val_batches=limit_val_batches,
         # Optional: enable mixed precision
         # precision="16-mixed" if accelerator == "gpu" else 32, 
         log_every_n_steps=10,
