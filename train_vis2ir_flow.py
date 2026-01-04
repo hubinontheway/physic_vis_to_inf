@@ -7,10 +7,12 @@ from typing import Dict, Iterator, Optional, Tuple
 
 import torch
 from torch import nn
+from torch.nn import functional as F
 from torch.utils.data import DataLoader
 
 from flow_matching.path import CondOTProbPath
 from datasets import create_dataset
+from models.phys_decomp_factory import create_phys_decomp_model
 from models.vis2ir_flow import Vis2IRFlowUNet
 from models.vis2phys_align import Vis2PhysAlignUNet
 from utils.config import load_yaml
@@ -18,6 +20,7 @@ from utils.device import resolve_device
 from utils.flow_sampling import build_solver, sample_ir
 from utils.lr_schedule import create_lr_scheduler
 from utils.metrics import psnr, ssim
+from utils.run_artifacts import find_best_checkpoint, find_latest_config
 from utils.training_logger import TrainingRunLogger
 from utils.vision import load_tensor_or_pil, paired_transform
 
@@ -48,6 +51,77 @@ def _validate_config(config: Dict[str, object]) -> None:
         raise ValueError("phys_align.cond_mode must be 'vis', 'phys', or 'vis_phys'")
     if not bool(phys_align.get("enabled", False)) and cond_mode != "vis":
         raise ValueError("phys_align.cond_mode requires phys_align.enabled=true")
+
+
+def _load_checkpoint(
+    model: torch.nn.Module,
+    checkpoint_path: str,
+    device: torch.device,
+) -> None:
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    if isinstance(checkpoint, dict) and "model" in checkpoint:
+        state = checkpoint["model"]
+    else:
+        state = checkpoint
+    model.load_state_dict(state, strict=True)
+
+
+def _load_phys_teacher(
+    teacher_cfg: Dict[str, object],
+    device: torch.device,
+    fallback_image_size: int,
+) -> torch.nn.Module:
+    run_dir = teacher_cfg.get("run_dir")
+    config_path = teacher_cfg.get("config_path")
+    if config_path is None and run_dir:
+        config_path, _ = find_latest_config(str(run_dir))
+    if config_path is None:
+        raise ValueError("phys_align.teacher requires config_path or run_dir")
+
+    config = load_yaml(str(config_path))
+    if not isinstance(config, dict):
+        raise ValueError("phys_align.teacher config must be a mapping")
+
+    image_size_value = teacher_cfg.get("image_size")
+    if image_size_value is None:
+        image_size_value = config.get("image_size", fallback_image_size)
+    image_size = int(image_size_value)
+
+    t_min_value = teacher_cfg.get("t_min")
+    if t_min_value is None:
+        t_min_value = config.get("t_min", 1.0)
+    t_min = float(t_min_value)
+
+    t_max_value = teacher_cfg.get("t_max")
+    if t_max_value is None:
+        t_max_value = config.get("t_max", 10.0)
+    t_max = float(t_max_value)
+
+    use_noise_value = teacher_cfg.get("use_noise")
+    if use_noise_value is None:
+        use_noise_value = config.get("use_noise", True)
+    use_noise = bool(use_noise_value)
+
+    model = create_phys_decomp_model(
+        config=config,
+        image_size=image_size,
+        t_min=t_min,
+        t_max=t_max,
+        use_noise=use_noise,
+        device=device,
+    )
+
+    checkpoint_path = teacher_cfg.get("checkpoint")
+    if checkpoint_path is None and run_dir:
+        checkpoint_path = find_best_checkpoint(str(run_dir))
+    if checkpoint_path is None:
+        raise ValueError("phys_align.teacher requires checkpoint or run_dir")
+
+    _load_checkpoint(model, str(checkpoint_path), device)
+    model.eval()
+    for param in model.parameters():
+        param.requires_grad = False
+    return model
 
 
 def _prune_checkpoints(checkpoint_dir: str, max_keep: int) -> None:
@@ -124,20 +198,30 @@ def _build_cond(
     phys_align: Optional[Vis2PhysAlignUNet],
     cond_mode: str,
     t_cond_norm: bool,
-) -> torch.Tensor:
+    return_phys: bool = False,
+) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]] | torch.Tensor:
     if cond_mode == "vis":
+        if return_phys:
+            return vis, None, None
         return vis
     if phys_align is None:
         raise ValueError("phys_align must be enabled for cond_mode != 'vis'")
     temperature, emissivity = phys_align(vis)
+    temperature_cond = temperature
     if t_cond_norm:
         denom = float(phys_align.t_max - phys_align.t_min)
-        temperature = (temperature - float(phys_align.t_min)) / denom
-        temperature = torch.clamp(temperature, 0.0, 1.0)
+        temperature_cond = (temperature - float(phys_align.t_min)) / denom
+        temperature_cond = torch.clamp(temperature_cond, 0.0, 1.0)
     if cond_mode == "phys":
-        return torch.cat([temperature, emissivity], dim=1)
+        cond = torch.cat([temperature_cond, emissivity], dim=1)
+        if return_phys:
+            return cond, temperature, emissivity
+        return cond
     if cond_mode == "vis_phys":
-        return torch.cat([vis, temperature, emissivity], dim=1)
+        cond = torch.cat([vis, temperature_cond, emissivity], dim=1)
+        if return_phys:
+            return cond, temperature, emissivity
+        return cond
     raise ValueError(f"Unsupported cond_mode '{cond_mode}'")
 
 
@@ -168,11 +252,6 @@ def run_training(config_path: str, steps_override: int | None = None) -> None:
     device = resolve_device(config)
     config_name = os.path.splitext(os.path.basename(config_path))[0]
     runs_dir = os.path.join("runs", config_name)
-    run_logger = TrainingRunLogger.create(
-        runs_dir,
-        config_path,
-        loss_columns=("step", "loss", "lr"),
-    )
 
     dataset_name = str(config["dataset"])
     data_root = str(config.get("data_root", "/data2/hubin/datasets"))
@@ -194,6 +273,12 @@ def run_training(config_path: str, steps_override: int | None = None) -> None:
     phys_align_enabled = bool(phys_align_cfg.get("enabled", False))
     cond_mode = str(phys_align_cfg.get("cond_mode", "vis")).lower()
     t_cond_norm = bool(phys_align_cfg.get("t_cond_norm", True))
+    teacher_cfg = phys_align_cfg.get("teacher", {}) or {}
+    if teacher_cfg is not None and not isinstance(teacher_cfg, dict):
+        raise ValueError("'phys_align.teacher' must be a mapping")
+    teacher_enabled = bool(teacher_cfg.get("enabled", False))
+    if teacher_enabled and not phys_align_enabled:
+        raise ValueError("phys_align.teacher requires phys_align.enabled=true")
     if cond_mode == "vis":
         cond_channels = 3
     elif cond_mode == "phys":
@@ -229,6 +314,25 @@ def run_training(config_path: str, steps_override: int | None = None) -> None:
             t_min=phys_t_min,
             t_max=phys_t_max,
         ).to(device)
+
+    phys_teacher = None
+    teacher_loss_weight = 0.0
+    teacher_t_weight = 1.0
+    teacher_eps_weight = 1.0
+    if teacher_enabled:
+        phys_teacher = _load_phys_teacher(teacher_cfg, device, image_size)
+        teacher_loss_weight = float(teacher_cfg.get("loss_weight", 1.0))
+        teacher_t_weight = float(teacher_cfg.get("t_weight", 1.0))
+        teacher_eps_weight = float(teacher_cfg.get("eps_weight", 1.0))
+
+    loss_columns = ("step", "loss", "lr")
+    if phys_teacher is not None:
+        loss_columns = ("step", "loss", "phys_teacher", "lr")
+    run_logger = TrainingRunLogger.create(
+        runs_dir,
+        config_path,
+        loss_columns=loss_columns,
+    )
 
     log_model = model
     if phys_align is not None:
@@ -292,16 +396,41 @@ def run_training(config_path: str, steps_override: int | None = None) -> None:
         t = torch.rand(vis.shape[0], device=device)
         x0 = torch.randn_like(ir)
         path_sample = path.sample(x_0=x0, x_1=ir, t=t)
-        cond = _build_cond(vis, phys_align, cond_mode, t_cond_norm)
+        cond_result = _build_cond(
+            vis,
+            phys_align,
+            cond_mode,
+            t_cond_norm,
+            return_phys=phys_teacher is not None,
+        )
+        if phys_teacher is not None:
+            cond, phys_t_pred, phys_eps_pred = cond_result
+        else:
+            cond = cond_result
         pred = model(path_sample.x_t, t, cond=cond)
-        loss = nn.functional.mse_loss(pred, path_sample.dx_t)
+        flow_loss = nn.functional.mse_loss(pred, path_sample.dx_t)
+        phys_teacher_loss = None
+        if phys_teacher is not None:
+            if phys_t_pred is None or phys_eps_pred is None:
+                phys_t_pred, phys_eps_pred = phys_align(vis)
+            with torch.no_grad():
+                teacher_t, teacher_eps, _, _ = phys_teacher(ir)
+            t_loss = F.l1_loss(phys_t_pred, teacher_t)
+            eps_loss = F.l1_loss(phys_eps_pred, teacher_eps)
+            phys_teacher_loss = teacher_loss_weight * (
+                teacher_t_weight * t_loss + teacher_eps_weight * eps_loss
+            )
+        loss = flow_loss if phys_teacher_loss is None else flow_loss + phys_teacher_loss
 
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
         current_lr = float(optimizer.param_groups[0]["lr"])
-        run_logger.log_losses(step, {"loss": loss.item(), "lr": current_lr})
+        log_payload = {"loss": loss.item(), "lr": current_lr}
+        if phys_teacher_loss is not None:
+            log_payload["phys_teacher"] = phys_teacher_loss.item()
+        run_logger.log_losses(step, log_payload)
         print(f"step={step} loss={loss.item():.6f} lr={current_lr:.6f}")
 
         if vis_interval > 0 and step % vis_interval == 0:
@@ -386,7 +515,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--config",
-        default="configs/vis2ir_flow.yml",
+        default="configs/vis2ir_flow_phys_align_teacher.yml",
         help="Path to training config",
     )
     parser.add_argument("--steps", type=int, help="Override number of steps")

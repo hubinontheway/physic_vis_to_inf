@@ -35,7 +35,7 @@ phys_align: # 物理属性对齐模块（可选）。
   t_max: 10.0 # 温度上限（与物理解耦一致）。
   t_cond_norm: true # 是否将温度归一化到 [0, 1] 再喂入 flow。
   teacher: # 使用已训练的物理解耦模型监督 vis->(T, eps)。
-    enabled: false # 是否启用物理教师监督。
+    enabled: true # 是否启用物理教师监督。
     run_dir: runs/phys_decomp # 物理解耦训练 run 目录（可选）。
     config_path: configs/phys_decomp.yml # 物理解耦配置（若 run_dir 无 config_*.yml）。
     checkpoint: runs/phys_decomp/checkpoints/best.pt # 物理解耦权重（若 run_dir 不含 best.pt）。
