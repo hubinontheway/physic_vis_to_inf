@@ -15,6 +15,22 @@ from utils.metrics import psnr, ssim
 from utils.flow_sampling import build_solver, sample_ir
 
 
+class ConcatWrapper(torch.nn.Module):
+    def __init__(self, unet_model: UNet2DModel):
+        super().__init__()
+        self.unet = unet_model
+        
+    def forward(self, x, t, cond=None):
+        # Allow calling with or without kwargs from flow_matching
+        # x: (B, 1, H, W), cond: (B, 3, H, W)
+        if cond is None:
+            raise ValueError("Condition 'cond' is required")
+            
+        model_input = torch.cat([x, cond], dim=1)
+        # Explicitly use keyword arguments for safety
+        return self.unet(sample=model_input, timestep=t).sample
+
+
 class Vis2IRFlowLightning(pl.LightningModule):
     def __init__(self, config: Dict[str, Any]):
         super().__init__()
@@ -53,29 +69,29 @@ class Vis2IRFlowLightning(pl.LightningModule):
             "out_channels": 1,
         })
         
-        # Initialize the model with the merged parameters
-        self.model = UNet2DModel(**unet_params)
+        # Initialize the diffusers model
+        unet = UNet2DModel(**unet_params)
+        
+        # Wrap it to handle concatenation
+        # This wrapper will be the main 'model' attribute
+        self.model = ConcatWrapper(unet)
         
         # Flow matching path
         self.path = CondOTProbPath()
 
     def setup(self, stage: str = None):
         # Build solver for sampling/validation
-        # Pass 'self' to use the custom forward() which handles concatenation
-        self.solver = build_solver(self)
+        # Now we can safely pass self.model (ConcatWrapper) because it's a child module,
+        # not the LightningModule itself.
+        self.solver = build_solver(self.model)
 
     def _build_cond(self, vis: torch.Tensor):
         # Simple passthrough for vis-only conditioning
         return vis
 
     def forward(self, x, t, cond):
-        # Concatenate condition and input (Standard Image-to-Image pattern)
-        # x: (B, 1, H, W), cond: (B, 3, H, W) -> model_input: (B, 4, H, W)
-        model_input = torch.cat([x, cond], dim=1)
-        
-        # diffusers UNet output is a struct, we need .sample
-        # Explicitly use keyword arguments for safety
-        return self.model(sample=model_input, timestep=t).sample
+        # Delegate to the wrapper
+        return self.model(x, t, cond=cond)
 
     def training_step(self, batch, batch_idx):
         vis, ir = batch["vis"], batch["ir"]
