@@ -10,20 +10,15 @@ from diffusers import UNet2DModel
 
 # Assuming these are available as per project context
 from flow_matching.path import CondOTProbPath
-from models.vis2phys_align import Vis2PhysAlignUNet
 from utils.lr_schedule import create_lr_scheduler
 from utils.metrics import psnr, ssim
 from utils.flow_sampling import build_solver, sample_ir
 
+
 class Vis2IRFlowLightning(pl.LightningModule):
-    def __init__(
-        self,
-        config: Dict[str, Any],
-        phys_align_model: Optional[Vis2PhysAlignUNet] = None,
-        teacher_model: Optional[torch.nn.Module] = None,
-    ):
+    def __init__(self, config: Dict[str, Any]):
         super().__init__()
-        self.save_hyperparameters(ignore=["phys_align_model", "teacher_model"])
+        self.save_hyperparameters()
         self.config = config
         
         # --- Model Initialization (Using diffusers.UNet2DModel) ---
@@ -31,16 +26,9 @@ class Vis2IRFlowLightning(pl.LightningModule):
         # Create a copy to avoid modifying the original config
         unet_params = flow_cfg.copy()
         
-        cond_mode = str(config.get("phys_align", {}).get("cond_mode", "vis")).lower()
-        
-        if cond_mode == "vis":
-            cond_channels = 3
-        elif cond_mode == "phys":
-            cond_channels = 2
-        else:  # vis_phys
-            cond_channels = 5
-
-        # Input channels = IR (1) + Condition (cond_channels)
+        # Hardcode channels for 'vis' (RGB) -> IR (L) task
+        # Input channels = IR (1) + Vis Condition (3)
+        cond_channels = 3
         in_channels = 1 + cond_channels
         
         # --- Backward Compatibility Logic ---
@@ -68,62 +56,20 @@ class Vis2IRFlowLightning(pl.LightningModule):
         # Initialize the model with the merged parameters
         self.model = UNet2DModel(**unet_params)
         
-        # Optional components
-        self.phys_align = phys_align_model
-        self.phys_teacher = teacher_model
-        
         # Flow matching path
         self.path = CondOTProbPath()
-        
-        # Configuration extraction for easy access
-        self.phys_align_cfg = config.get("phys_align", {}) or {}
-        self.cond_mode = cond_mode
-        self.t_cond_norm = bool(self.phys_align_cfg.get("t_cond_norm", True))
-        
-        # Teacher config
-        teacher_cfg = self.phys_align_cfg.get("teacher", {}) or {}
-        self.teacher_loss_weight = float(teacher_cfg.get("loss_weight", 1.0))
-        self.teacher_t_weight = float(teacher_cfg.get("t_weight", 1.0))
-        self.teacher_eps_weight = float(teacher_cfg.get("eps_weight", 1.0))
 
     def setup(self, stage: str = None):
         # Build solver for sampling/validation
         self.solver = build_solver(self.model)
 
-    def _build_cond(self, vis: torch.Tensor, return_phys: bool = False):
-        if self.cond_mode == "vis":
-            return (vis, None, None) if return_phys else vis
-
-        if self.phys_align is None:
-             # Should be handled by config validation, but safe check
-            raise ValueError("phys_align model required for non-vis cond_mode")
-
-        temperature, emissivity = self.phys_align(vis)
-        
-        # Normalize temperature if configured
-        temperature_cond = temperature
-        if self.t_cond_norm:
-            # Access attributes from phys_align model assuming they exist
-            t_min = getattr(self.phys_align, 't_min', 1.0)
-            t_max = getattr(self.phys_align, 't_max', 10.0)
-            denom = float(t_max - t_min)
-            temperature_cond = (temperature - float(t_min)) / denom
-            temperature_cond = torch.clamp(temperature_cond, 0.0, 1.0)
-
-        if self.cond_mode == "phys":
-            cond = torch.cat([temperature_cond, emissivity], dim=1)
-        elif self.cond_mode == "vis_phys":
-            cond = torch.cat([vis, temperature_cond, emissivity], dim=1)
-        else:
-            raise ValueError(f"Unknown cond_mode: {self.cond_mode}")
-            
-        if return_phys:
-            return cond, temperature, emissivity
-        return cond
+    def _build_cond(self, vis: torch.Tensor):
+        # Simple passthrough for vis-only conditioning
+        return vis
 
     def forward(self, x, t, cond):
         # Concatenate condition and input (Standard Image-to-Image pattern)
-        # x: (B, 1, H, W), cond: (B, C, H, W) -> model_input: (B, 1+C, H, W)
+        # x: (B, 1, H, W), cond: (B, 3, H, W) -> model_input: (B, 4, H, W)
         model_input = torch.cat([x, cond], dim=1)
         
         # diffusers UNet output is a struct, we need .sample
@@ -138,16 +84,7 @@ class Vis2IRFlowLightning(pl.LightningModule):
         path_sample = self.path.sample(x_0=x0, x_1=ir, t=t)
         
         # Condition building
-        cond_result = self._build_cond(
-            vis, 
-            return_phys=(self.phys_teacher is not None)
-        )
-        
-        if self.phys_teacher is not None:
-            cond, phys_t_pred, phys_eps_pred = cond_result
-        else:
-            cond = cond_result
-            phys_t_pred, phys_eps_pred = None, None
+        cond = self._build_cond(vis)
 
         # Forward pass (using our custom forward which handles concat)
         pred = self(path_sample.x_t, t, cond)
@@ -155,24 +92,6 @@ class Vis2IRFlowLightning(pl.LightningModule):
         # Flow loss
         loss = F.mse_loss(pred, path_sample.dx_t)
         self.log("train/flow_loss", loss, prog_bar=True)
-
-        # Teacher loss (Physical Alignment)
-        if self.phys_teacher is not None:
-            with torch.no_grad():
-                teacher_t, teacher_eps, _, _ = self.phys_teacher(ir)
-            
-            t_loss = F.l1_loss(phys_t_pred, teacher_t)
-            eps_loss = F.l1_loss(phys_eps_pred, teacher_eps)
-            
-            phys_loss = self.teacher_loss_weight * (
-                self.teacher_t_weight * t_loss + self.teacher_eps_weight * eps_loss
-            )
-            loss = loss + phys_loss
-            
-            self.log("train/phys_loss", phys_loss)
-            self.log("train/t_loss", t_loss)
-            self.log("train/eps_loss", eps_loss)
-
         self.log("train/total_loss", loss)
         return loss
 
@@ -181,12 +100,9 @@ class Vis2IRFlowLightning(pl.LightningModule):
         sampling_cfg = self.config.get("flow_sampling", {}) or {}
         
         # For validation, we generate samples
-        cond = self._build_cond(vis, return_phys=False)
+        cond = self._build_cond(vis)
         
         # Note: solver.sample calls model(x, t, cond) internally
-        # Ensure build_solver wraps the model correctly or the model's forward handles it.
-        # Our forward() now handles concat, so it should be compatible if solver passes args correctly.
-        
         pred_ir = sample_ir(self.solver, cond, sampling_cfg).clamp(0.0, 1.0)
         
         # Metrics
@@ -201,9 +117,6 @@ class Vis2IRFlowLightning(pl.LightningModule):
     def configure_optimizers(self):
         # Collect parameters
         params = list(self.model.parameters())
-        if self.phys_align is not None:
-            params += list(self.phys_align.parameters())
-            
         lr = float(self.config.get("lr", 1e-4))
         optimizer = Adam(params, lr=lr)
         

@@ -96,6 +96,7 @@ def run_eval(run_dir: str) -> Dict[str, float]:
             
             start_time = time.perf_counter()
             
+            # Use the lightning module's methods for consistency
             cond = pl_model._build_cond(vis)
             pred_ir = sample_ir(pl_model.solver, cond, sampling_cfg).clamp(0.0, 1.0)
             
