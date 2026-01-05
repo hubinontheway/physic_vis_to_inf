@@ -28,6 +28,9 @@ class Vis2IRFlowLightning(pl.LightningModule):
         
         # --- Model Initialization (Using diffusers.UNet2DModel) ---
         flow_cfg = config.get("flow_model", {}) or {}
+        # Create a copy to avoid modifying the original config
+        unet_params = flow_cfg.copy()
+        
         cond_mode = str(config.get("phys_align", {}).get("cond_mode", "vis")).lower()
         
         if cond_mode == "vis":
@@ -39,25 +42,31 @@ class Vis2IRFlowLightning(pl.LightningModule):
 
         # Input channels = IR (1) + Condition (cond_channels)
         in_channels = 1 + cond_channels
-        base_channels = int(flow_cfg.get("base_channels", 32))
         
-        # Map channel_mults to block_out_channels
-        # e.g., base=32, mults=[1, 2, 4] -> block_out=[32, 64, 128]
-        channel_mults = flow_cfg.get("channel_mults", [1, 2, 4])
-        block_out_channels = tuple(base_channels * m for m in channel_mults)
+        # --- Backward Compatibility Logic ---
+        # If user provides old-style 'base_channels' and 'channel_mults', convert them to 'block_out_channels'
+        if "block_out_channels" not in unet_params:
+            base_channels = int(unet_params.pop("base_channels", 32))
+            channel_mults = unet_params.pop("channel_mults", [1, 2, 4])
+            unet_params["block_out_channels"] = tuple(base_channels * m for m in channel_mults)
+            
+        # Ensure block types are defined. If not, default to standard ResNet blocks
+        num_levels = len(unet_params["block_out_channels"])
+        if "down_block_types" not in unet_params:
+            unet_params["down_block_types"] = tuple("DownBlock2D" for _ in range(num_levels))
+        if "up_block_types" not in unet_params:
+            unet_params["up_block_types"] = tuple("UpBlock2D" for _ in range(num_levels))
 
-        self.model = UNet2DModel(
-            sample_size=int(config.get("image_size", 64)),
-            in_channels=in_channels,
-            out_channels=1,
-            layers_per_block=2,
-            block_out_channels=block_out_channels,
-            down_block_types=tuple("DownBlock2D" for _ in channel_mults),
-            up_block_types=tuple("UpBlock2D" for _ in channel_mults),
-            # Add attention if needed, e.g., at lower resolutions
-            # down_block_types=("DownBlock2D", "AttnDownBlock2D", "AttnDownBlock2D"),
-            # up_block_types=("AttnUpBlock2D", "AttnUpBlock2D", "UpBlock2D"),
-        )
+        # --- Forced/Inferred Parameters ---
+        # These are determined by the task structure and cannot be overridden by config
+        unet_params.update({
+            "sample_size": int(config.get("image_size", 64)),
+            "in_channels": in_channels,
+            "out_channels": 1,
+        })
+        
+        # Initialize the model with the merged parameters
+        self.model = UNet2DModel(**unet_params)
         
         # Optional components
         self.phys_align = phys_align_model

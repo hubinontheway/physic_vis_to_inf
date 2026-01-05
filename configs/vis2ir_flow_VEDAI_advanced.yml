@@ -1,0 +1,54 @@
+lr: 0.0002
+batch_size: 8
+image_size: 256
+steps: 100000
+eval_interval: 5000
+vis_interval: 5000
+lr_schedule:
+  type: cosine
+  warmup_steps: 1000
+  min_lr: 0.00001
+
+eval_split: test
+eval_batch_size: 4
+best_metric: psnr
+best_metric_mode: max
+max_checkpoints: 5
+
+dataset: VEDIA
+split: train
+data_root: /data2/hubin/datasets
+seed: 123
+device: cuda:0
+
+# --- Advanced Flow Model Configuration ---
+# You can now pass any argument supported by diffusers.UNet2DModel here.
+flow_model:
+  # Explicit channel configuration (replaces base_channels/channel_mults)
+  block_out_channels: [64, 128, 256, 512]
+  
+  # Layer architecture: mixing standard conv blocks with attention blocks
+  # AttnDownBlock2D adds self-attention, useful for capturing global context
+  down_block_types: 
+    - "DownBlock2D"
+    - "DownBlock2D"
+    - "AttnDownBlock2D"
+    - "AttnDownBlock2D"
+  up_block_types: 
+    - "AttnUpBlock2D"
+    - "AttnUpBlock2D"
+    - "UpBlock2D"
+    - "UpBlock2D"
+
+  # Other UNet2DModel parameters
+  layers_per_block: 2          # ResNet layers per block (depth)
+  attention_head_dim: 64       # Dimension of attention heads
+  dropout: 0.1                 # Dropout probability
+  act_fn: "silu"               # Activation function
+  center_input_sample: false   # Whether to center the input to [-1, 1] (usually handled by data loader)
+
+flow_sampling:
+  method: euler
+  steps: 50
+  atol: 0.00001
+  rtol: 0.00001
