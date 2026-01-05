@@ -144,6 +144,18 @@ def main():
     # --- Trainer ---
     # Accelerate config: check if CUDA is available
     accelerator = "gpu" if torch.cuda.is_available() else "cpu"
+    
+    # Parse devices from config (e.g., "cuda:5" -> [5])
+    device_cfg = str(config.get("device", "0")).lower()
+    if accelerator == "gpu":
+        if ":" in device_cfg:
+            devices = [int(device_cfg.split(":")[-1])]
+        elif device_cfg.isdigit():
+            devices = [int(device_cfg)]
+        else:
+            devices = 1 # Fallback to 1 GPU
+    else:
+        devices = "auto"
 
     # Validation scheduling logic
     # Calculate interval in terms of batches if validation is frequency-based
@@ -166,7 +178,7 @@ def main():
     
     trainer = pl.Trainer(
         accelerator=accelerator,
-        devices=1 if accelerator == "gpu" else None,
+        devices=devices,
         max_steps=max_steps,
         logger=logger,
         callbacks=callbacks,

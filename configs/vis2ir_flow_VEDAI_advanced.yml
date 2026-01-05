@@ -1,16 +1,16 @@
-lr: 0.0002
-batch_size: 8
+lr: 0.0001
+batch_size: 64 # A100 显存充足，建议保持较大 batch 提高稳定性
 image_size: 256
-steps: 100000
+steps: 200000
 eval_interval: 5000
 vis_interval: 5000
 lr_schedule:
   type: cosine
-  warmup_steps: 1000
-  min_lr: 0.00001
+  warmup_steps: 2000
+  min_lr: 0.000001
 
 eval_split: test
-eval_batch_size: 4
+eval_batch_size: 32
 best_metric: psnr
 best_metric_mode: max
 max_checkpoints: 5
@@ -19,16 +19,13 @@ dataset: VEDIA
 split: train
 data_root: /data2/hubin/datasets
 seed: 123
-device: cuda:0
+device: cuda:5 # 现已支持指定显卡
 
-# --- Advanced Flow Model Configuration ---
-# You can now pass any argument supported by diffusers.UNet2DModel here.
+# --- Advanced Flow Model Configuration (Slightly Reduced) ---
 flow_model:
-  # Explicit channel configuration (replaces base_channels/channel_mults)
-  block_out_channels: [64, 128, 256, 512]
-  
-  # Layer architecture: mixing standard conv blocks with attention blocks
-  # AttnDownBlock2D adds self-attention, useful for capturing global context
+  block_out_channels: [128, 256, 512, 512] # 减小了最后一层的规模
+  layers_per_block: 2 # 减小了深度
+
   down_block_types: 
     - "DownBlock2D"
     - "DownBlock2D"
@@ -40,12 +37,10 @@ flow_model:
     - "UpBlock2D"
     - "UpBlock2D"
 
-  # Other UNet2DModel parameters
-  layers_per_block: 2          # ResNet layers per block (depth)
-  attention_head_dim: 64       # Dimension of attention heads
-  dropout: 0.1                 # Dropout probability
-  act_fn: "silu"               # Activation function
-  center_input_sample: false   # Whether to center the input to [-1, 1] (usually handled by data loader)
+  attention_head_dim: 64       
+  dropout: 0.0                 
+  act_fn: "silu"               
+  center_input_sample: false   
 
 flow_sampling:
   method: euler
