@@ -61,7 +61,8 @@ class Vis2IRFlowLightning(pl.LightningModule):
 
     def setup(self, stage: str = None):
         # Build solver for sampling/validation
-        self.solver = build_solver(self.model)
+        # Pass 'self' to use the custom forward() which handles concatenation
+        self.solver = build_solver(self)
 
     def _build_cond(self, vis: torch.Tensor):
         # Simple passthrough for vis-only conditioning
@@ -73,7 +74,8 @@ class Vis2IRFlowLightning(pl.LightningModule):
         model_input = torch.cat([x, cond], dim=1)
         
         # diffusers UNet output is a struct, we need .sample
-        return self.model(model_input, t).sample
+        # Explicitly use keyword arguments for safety
+        return self.model(sample=model_input, timestep=t).sample
 
     def training_step(self, batch, batch_idx):
         vis, ir = batch["vis"], batch["ir"]
