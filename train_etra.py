@@ -225,6 +225,19 @@ def main():
         log_every_n_steps=10,
     )
 
+    # --- Save Config for Eval ---
+    # Ensure log_dir exists (it should be created by Trainer/Logger)
+    log_dir = trainer.log_dir or trainer.logger.log_dir
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
+        import yaml
+        import time
+        timestamp = int(time.time())
+        config_save_path = os.path.join(log_dir, f"config_{timestamp}.yml")
+        with open(config_save_path, "w") as f:
+            yaml.dump(config, f)
+        print(f"Config saved to {config_save_path}")
+
     # --- Start Training ---
     trainer.fit(model, train_loader, val_loader)
 
