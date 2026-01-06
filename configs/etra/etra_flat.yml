@@ -2,7 +2,7 @@
 lr: 1.0e-4
 batch_size: 8
 image_size: 256 # Reduced from 512 to 256 to fit in memory typically, match VEDIA common usage or user preference. The referenced file had 512 but vis2ir had 256. I'll stick to 256 for safety or 512 if confident. The etra_ir.yaml had 512. I'll use 512.
-steps: 100000
+steps: 200000
 eval_interval: 1000
 vis_interval: 1000
 dataset: VEDIA
@@ -10,7 +10,7 @@ data_root: /data2/hubin/datasets
 split: train
 eval_split: test
 seed: 123
-device: cuda:0
+device: cuda:1
 
 # Model
 model_params:

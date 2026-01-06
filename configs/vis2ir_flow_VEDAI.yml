@@ -17,7 +17,7 @@ dataset: VEDIA # 数据集名称，传给 create_dataset（如 VEDIA）。
 split: train # 数据集划分（train/test）。
 data_root: /data2/hubin/datasets # 默认数据集根目录；未指定 dataset_root 时使用。
 seed: 123 # 随机种子，用于控制增强与采样的可重复性。
-device: cuda:5 # 训练设备；可设为 "cuda:1" 或 "cpu"，留空则自动选择。
+device: cuda:4 # 训练设备；可设为 "cuda:1" 或 "cpu"，留空则自动选择。
 flow_model: # Flow Matching 模型配置。
   base_channels: 32 # 基础通道数。
   channel_mults: [1, 2, 4] # UNet 通道倍率。
