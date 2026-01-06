@@ -49,6 +49,11 @@ def run_eval(run_dir: str) -> Dict[str, float]:
     # 1. Load config
     config_path, run_id = find_latest_config(run_dir)
     config = load_yaml(config_path)
+    
+    # Unwrap config if it's nested (e.g. from hparams.yaml)
+    if isinstance(config, dict) and "config" in config and isinstance(config["config"], dict):
+        if "dataset" in config["config"] or "model_params" in config["config"]:
+            config = config["config"]
 
     # 2. Setup Device
     device = torch.device(config.get("device", "cuda" if torch.cuda.is_available() else "cpu"))

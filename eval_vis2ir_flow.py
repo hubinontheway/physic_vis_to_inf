@@ -38,6 +38,13 @@ def run_eval(run_dir: str) -> Dict[str, float]:
     config = load_yaml(config_path)
     if not isinstance(config, dict):
         raise ValueError("train config must be a mapping")
+    
+    # Unwrap config if it's nested (e.g. from hparams.yaml)
+    if "config" in config and isinstance(config["config"], dict):
+        # Check if it looks like the actual config (has 'dataset' or 'model' keys)
+        # and the parent doesn't (to avoid false positives if 'config' is just a param)
+        if "dataset" in config["config"]:
+            config = config["config"]
 
     # 2. Setup Device & Seed
     image_size = int(config["image_size"])
