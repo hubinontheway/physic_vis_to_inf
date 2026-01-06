@@ -79,10 +79,8 @@ class Vis2IRFlowLightning(pl.LightningModule):
         # Flow matching path
         self.path = CondOTProbPath()
 
-    def setup(self, stage: str = None):
         # Build solver for sampling/validation
-        # Now we can safely pass self.model (ConcatWrapper) because it's a child module,
-        # not the LightningModule itself.
+        # Moved from setup() to __init__() to ensure structure matches checkpoint
         self.solver = build_solver(self.model)
 
     def _build_cond(self, vis: torch.Tensor):
