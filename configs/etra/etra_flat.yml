@@ -1,0 +1,31 @@
+# Training
+lr: 1.0e-4
+batch_size: 8
+image_size: 256 # Reduced from 512 to 256 to fit in memory typically, match VEDIA common usage or user preference. The referenced file had 512 but vis2ir had 256. I'll stick to 256 for safety or 512 if confident. The etra_ir.yaml had 512. I'll use 512.
+steps: 100000
+eval_interval: 1000
+vis_interval: 1000
+dataset: VEDIA
+data_root: /data2/hubin/datasets
+split: train
+eval_split: test
+seed: 123
+device: cuda:0
+
+# Model
+model_params:
+  smp_model: UnetPlusPlus
+  encoder_name: efficientnet-b5
+  encoder_weights: imagenet
+  in_channels: 1
+  out_channels: 5
+  weight_decay: 1.0e-4
+  lowpass_kernel: 16
+  input_range: minus_one_one
+  loss_weights:
+    rec: 1.0
+    ssim: 0.2
+    tv_low: 0.5
+    tv_eps: 0.1
+    edge: 0.2
+    prior: 0.05
