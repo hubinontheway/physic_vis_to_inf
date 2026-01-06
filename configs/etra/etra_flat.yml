@@ -21,7 +21,7 @@ model_params:
   out_channels: 5
   weight_decay: 1.0e-4
   lowpass_kernel: 16
-  input_range: minus_one_one
+  input_range: zero_one
   loss_weights:
     rec: 1.0
     ssim: 0.2
