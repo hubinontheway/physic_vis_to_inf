@@ -79,7 +79,6 @@ def run_eval(run_dir: str) -> Dict[str, float]:
     )
     pl_model.to(device)
     pl_model.eval()
-    pl_model.setup() # Initialize solver
 
     # 5. Evaluation Loop
     sampling_cfg = config.get("flow_sampling", {}) or {}
