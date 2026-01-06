@@ -68,9 +68,19 @@ class ETRAPlModule(pl.LightningModule):
 
     def _get_input(self, batch):
         x = batch["image"] if isinstance(batch, dict) else batch
-        if len(x.shape) == 3:
-            x = x[..., None]
-        x = rearrange(x, "b h w c -> b c h w")
+        # Assuming standard PyTorch (B, C, H, W)
+        if x.ndim == 4:
+            # Check if likely channel-last (B, H, W, C) where C is small (e.g. 1 or 3) and H, W are large
+            b, c, h, w = x.shape
+            # Heuristic: if last dim is small (<=5) and 2nd dim is large, assume (B, H, W, C)
+            if c > 5 and w <= 5: 
+                x = rearrange(x, "b h w c -> b c h w")
+        elif x.ndim == 3:
+             # (H, W, C) or (C, H, W)? If batching is missing?
+             # But usually unbatched is not passed here in PL training step.
+             # Assuming (B, H, W) -> (B, 1, H, W)
+             x = x.unsqueeze(1)
+             
         return x.to(memory_format=torch.contiguous_format).float()
 
     def _to_01(self, x):
@@ -94,7 +104,8 @@ class ETRAPlModule(pl.LightningModule):
         a = torch.sigmoid(a_raw)
         r = torch.sigmoid(r_raw)
         b_scale = F.softplus(self.b_scale)
-        b = torch.sigmoid(b_scale * t + self.b_bias)
+        b_bias = F.softplus(self.b_bias)
+        b = 1.0 - torch.exp(-(b_scale * t + b_bias))
         return {"t": t, "eps": eps, "tau": tau, "a": a, "r": r, "b": b}
 
     def _lowpass(self, x):
@@ -140,7 +151,7 @@ class ETRAPlModule(pl.LightningModule):
         loss_tv_eps = self._tv_loss(decoded["eps"])
         loss_edge = self._edge_loss(decoded["t"], i)
         blur_i = self._lowpass(i)
-        loss_prior = F.l1_loss(a_low, blur_i) + F.l1_loss(r_low, blur_i) + torch.mean(torch.abs(1.0 - tau_low))
+        loss_prior = F.l1_loss(a_low, blur_i) + F.l1_loss(r_low, blur_i)
 
         loss = (
             weights["rec"] * loss_rec
