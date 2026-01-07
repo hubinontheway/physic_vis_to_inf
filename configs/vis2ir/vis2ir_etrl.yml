@@ -1,0 +1,56 @@
+# Training
+lr: 0.0002
+batch_size: 8
+image_size: 256
+steps: 100000
+eval_interval: 5000
+vis_interval: 1
+lr_schedule:
+  type: cosine
+  warmup_steps: 1000
+  min_lr: 0.00001
+
+eval_split: test
+eval_batch_size: 4
+best_metric: psnr
+best_metric_mode: max
+max_checkpoints: 5
+
+dataset: VEDIA
+split: train
+data_root: /data2/hubin/datasets
+seed: 123
+device: cuda:0
+
+model_params:
+  smp_model: UnetPlusPlus
+  encoder_name: efficientnet-b5
+  encoder_weights: imagenet
+  in_channels: 3
+  out_channels: 1
+  output_activation: sigmoid
+  loss_weights:
+    l1: 1.0
+    ssim: 0.2
+
+etra:
+  enabled: true
+  checkpoint: /path/to/etra.ckpt
+  loss_weight: 0.3
+  model_params:
+    smp_model: UnetPlusPlus
+    encoder_name: efficientnet-b5
+    encoder_weights: imagenet
+    in_channels: 1
+    out_channels: 5
+    base_learning_rate: 1.0e-4
+    weight_decay: 1.0e-4
+    lowpass_kernel: 16
+    input_range: zero_one
+    loss_weights:
+      rec: 1.0
+      ssim: 0.2
+      tv_low: 0.5
+      tv_eps: 0.1
+      edge: 0.2
+      prior: 0.05
