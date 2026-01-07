@@ -54,6 +54,7 @@ class Vis2IRETRLPlModule(pl.LightningModule):
                 self.etra = ETRAPlModule.load_from_checkpoint(
                     etra_checkpoint,
                     **etra_params,
+                    map_location="cpu",
                 )
                 self.etra.eval()
                 for param in self.etra.parameters():
