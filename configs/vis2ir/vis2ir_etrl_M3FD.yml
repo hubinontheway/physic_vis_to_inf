@@ -16,11 +16,11 @@ best_metric: psnr
 best_metric_mode: max
 max_checkpoints: 5
 
-dataset: VEDIA
+dataset: M3FD_Detection
 split: train
 data_root: /data2/hubin/datasets
 seed: 123
-device: cuda:4
+device: cuda:3
 
 model_params:
   smp_model: UnetPlusPlus
