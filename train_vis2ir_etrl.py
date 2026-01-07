@@ -57,6 +57,13 @@ def main():
     config = load_yaml(args.config)
     pl.seed_everything(config.get("seed", 123))
 
+    device_cfg = str(config.get("device", "0")).lower()
+    if torch.cuda.is_available() and "cpu" not in device_cfg:
+        if ":" in device_cfg:
+            torch.cuda.set_device(int(device_cfg.split(":")[-1]))
+        elif device_cfg.isdigit():
+            torch.cuda.set_device(int(device_cfg))
+
     batch_size = int(config["batch_size"])
     image_size = int(config["image_size"])
     dataset_name = str(config["dataset"])
@@ -128,7 +135,6 @@ def main():
         callbacks = [checkpoint_callback, lr_monitor]
 
     accelerator = "gpu" if torch.cuda.is_available() else "cpu"
-    device_cfg = str(config.get("device", "0")).lower()
     if accelerator == "gpu":
         if ":" in device_cfg:
             devices = [int(device_cfg.split(":")[-1])]
