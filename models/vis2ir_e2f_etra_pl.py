@@ -61,22 +61,42 @@ class Vis2IRE2FETRALightning(pl.LightningModule):
         self.path = CondOTProbPath()
         self.solver = build_solver(self.model)
 
+    def _resolve_checkpoint_device(self, cfg: Dict[str, Any]) -> torch.device:
+        device_value = cfg.get("device", self.config.get("device"))
+        if device_value is None:
+            return torch.device("cpu")
+        if isinstance(device_value, torch.device):
+            device = device_value
+        else:
+            device_str = str(device_value).lower()
+            if device_str.isdigit():
+                device_str = f"cuda:{device_str}"
+            try:
+                device = torch.device(device_str)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"Invalid device '{device_value}' for checkpoint loading") from exc
+        if device.type == "cuda" and not torch.cuda.is_available():
+            return torch.device("cpu")
+        return device
+
     def _load_etrl(self, etrl_cfg: Dict[str, Any]) -> Vis2IRETRLPlModule:
         etrl_checkpoint = etrl_cfg.get("checkpoint")
         if not etrl_checkpoint:
             raise ValueError("etrl.checkpoint must be provided")
 
         override_cfg = etrl_cfg.get("config_override")
+        map_location_cfg = override_cfg if isinstance(override_cfg, dict) else etrl_cfg
+        map_location = self._resolve_checkpoint_device(map_location_cfg)
         if override_cfg:
             etrl = Vis2IRETRLPlModule.load_from_checkpoint(
                 etrl_checkpoint,
                 config=override_cfg,
-                map_location="cpu",
+                map_location=map_location,
             )
         else:
             etrl = Vis2IRETRLPlModule.load_from_checkpoint(
                 etrl_checkpoint,
-                map_location="cpu",
+                map_location=map_location,
             )
 
         etrl.eval()
@@ -92,9 +112,10 @@ class Vis2IRE2FETRALightning(pl.LightningModule):
         etra_checkpoint = etra_cfg.get("checkpoint")
         if etra_checkpoint:
             etra_params = etra_cfg.get("model_params", {}) or {}
+            map_location = self._resolve_checkpoint_device(etra_cfg)
             etra = ETRAPlModule.load_from_checkpoint(
                 etra_checkpoint,
-                map_location="cpu",
+                map_location=map_location,
                 **etra_params,
             )
             etra.eval()
