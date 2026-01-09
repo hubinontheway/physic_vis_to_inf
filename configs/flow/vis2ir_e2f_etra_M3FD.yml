@@ -15,21 +15,21 @@ best_metric: psnr
 best_metric_mode: max
 max_checkpoints: 5
 
-dataset: VEDIA
+dataset: M3FD_Detection
 split: train
 data_root: /data2/hubin/datasets
 seed: 123
-device: cuda:5
+device: cuda:3
 
 etrl:
-  checkpoint: runs/vis2ir_etrl/version_3/checkpoints/last.ckpt
+  checkpoint: runs/vis2ir_etrl_M3FD/version_2/checkpoints/last.ckpt
 
 etra:
   enabled: true
   checkpoint: runs/etra_flat/version_1/checkpoints/last.ckpt
   loss_weight: 0.3
   model_params:
-    smp_model: UnetPlusPlus
+    smp_model: UnetPlusPlusq
     encoder_name: efficientnet-b5
     encoder_weights: imagenet
     in_channels: 1
