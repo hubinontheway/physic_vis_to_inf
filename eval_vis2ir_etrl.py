@@ -13,7 +13,7 @@ from datasets import create_dataset
 from models.vis2ir_etrl_pl import Vis2IRETRLPlModule
 from utils.config import load_yaml
 from utils.device import resolve_device
-from utils.metrics import psnr, ssim
+from utils.metrics import PerceptualMetrics, psnr, ssim
 from utils.run_artifacts import find_best_checkpoint, find_latest_config, save_eval_metrics
 from utils.vision import load_tensor_or_pil, paired_transform, tensor_to_pil
 
@@ -80,6 +80,7 @@ def run_eval(run_dir: str) -> Dict[str, float]:
     total_psnr = 0.0
     total_ssim = 0.0
     total_samples = 0
+    perceptual_metrics = PerceptualMetrics.create(device)
 
     with torch.no_grad():
         for batch in loader:
@@ -104,6 +105,7 @@ def run_eval(run_dir: str) -> Dict[str, float]:
             total_psnr += batch_psnr * b_size
             total_ssim += batch_ssim * b_size
             total_samples += b_size
+            perceptual_metrics.update(pred_ir, ir)
 
             per_image = elapsed / max(b_size, 1)
             peak_mb = None
@@ -130,6 +132,7 @@ def run_eval(run_dir: str) -> Dict[str, float]:
         "psnr": total_psnr / total_samples,
         "ssim": total_ssim / total_samples,
     }
+    metrics.update(perceptual_metrics.compute())
 
     save_eval_metrics(run_dir, run_id, metrics, split=eval_split)
 
@@ -151,7 +154,14 @@ def main():
 
     run_dir = _resolve_run_dir(args.run_dir, args.config)
     metrics = run_eval(run_dir)
-    print(f"eval psnr={metrics['psnr']:.4f} ssim={metrics['ssim']:.4f}")
+    print(
+        "eval "
+        f"psnr={metrics['psnr']:.4f} "
+        f"ssim={metrics['ssim']:.4f} "
+        f"lpips={metrics['lpips']:.4f} "
+        f"fid={metrics['fid']:.4f} "
+        f"kid={metrics['kid']:.6f}"
+    )
 
 
 if __name__ == "__main__":

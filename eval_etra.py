@@ -16,7 +16,7 @@ from models.etra_pl import ETRAPlModule
 from utils.config import load_yaml
 from utils.vision import load_tensor_or_pil, paired_transform, tensor_to_pil
 from utils.run_artifacts import find_best_checkpoint, find_latest_config, save_eval_metrics
-from utils.metrics import psnr, ssim
+from utils.metrics import PerceptualMetrics, psnr, ssim
 
 
 class IRWrapper(Dataset):
@@ -100,6 +100,7 @@ def run_eval(run_dir: str) -> Dict[str, float]:
     total_psnr = 0.0
     total_ssim = 0.0
     total_samples = 0
+    perceptual_metrics = PerceptualMetrics.create(device)
 
     with torch.no_grad():
         for batch in loader:
@@ -129,6 +130,7 @@ def run_eval(run_dir: str) -> Dict[str, float]:
             total_psnr += batch_psnr * b_size
             total_ssim += batch_ssim * b_size
             total_samples += b_size
+            perceptual_metrics.update(i_hat, i)
             
             per_image = elapsed / max(b_size, 1)
 
@@ -173,8 +175,16 @@ def run_eval(run_dir: str) -> Dict[str, float]:
         "psnr": total_psnr / total_samples, 
         "ssim": total_ssim / total_samples
     }
+    avg_metrics.update(perceptual_metrics.compute())
     
-    print(f"Evaluation Complete. PSNR: {avg_metrics['psnr']:.4f}, SSIM: {avg_metrics['ssim']:.4f}")
+    print(
+        "Evaluation Complete. "
+        f"PSNR: {avg_metrics['psnr']:.4f}, "
+        f"SSIM: {avg_metrics['ssim']:.4f}, "
+        f"LPIPS: {avg_metrics['lpips']:.4f}, "
+        f"FID: {avg_metrics['fid']:.4f}, "
+        f"KID: {avg_metrics['kid']:.6f}"
+    )
     save_eval_metrics(run_dir, run_id, avg_metrics, split=eval_split)
     
     # Save CSV
