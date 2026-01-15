@@ -69,7 +69,7 @@ def _as_rgb(tensor: torch.Tensor) -> torch.Tensor:
 
 
 def _to_255(tensor: torch.Tensor) -> torch.Tensor:
-    return (tensor * 255.0).clamp(0.0, 255.0)
+    return (tensor * 255.0).clamp(0.0, 255.0).to(torch.uint8)
 
 
 def _to_lpips_range(tensor: torch.Tensor) -> torch.Tensor:
