@@ -91,9 +91,19 @@ class PerceptualMetrics:
     sample_count: int = 0
 
     @classmethod
-    def create(cls, device: torch.device, lpips_net: str = "alex") -> "PerceptualMetrics":
+    def create(
+        cls,
+        device: torch.device,
+        lpips_net: str = "alex",
+        dataset_size: int | None = None,
+        kid_subset_size: int = 50,
+    ) -> "PerceptualMetrics":
         fid = FrechetInceptionDistance().to(device)
-        kid = KernelInceptionDistance().to(device)
+        subset_size = kid_subset_size
+        if dataset_size is not None:
+            subset_size = min(kid_subset_size, int(dataset_size))
+            subset_size = max(subset_size, 1)
+        kid = KernelInceptionDistance(subset_size=subset_size).to(device)
         lpips = LearnedPerceptualImagePatchSimilarity(net_type=lpips_net).to(device)
         fid.eval()
         kid.eval()
