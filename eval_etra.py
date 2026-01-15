@@ -100,7 +100,7 @@ def run_eval(run_dir: str) -> Dict[str, float]:
     total_psnr = 0.0
     total_ssim = 0.0
     total_samples = 0
-    perceptual_metrics = PerceptualMetrics.create(device)
+    perceptual_metrics = PerceptualMetrics.create(device, dataset_size=len(dataset))
 
     with torch.no_grad():
         for batch in loader:
