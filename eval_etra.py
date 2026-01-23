@@ -29,7 +29,7 @@ class IRWrapper(Dataset):
     
     def __getitem__(self, idx):
         data = self.dataset[idx]
-        return {"image": data["ir"]}
+        return {"image": data["ir"], "ir_path": data.get("ir_path")}
 
 
 def _resolve_run_dir(run_dir: str | None, config_path: str | None) -> str:
@@ -144,9 +144,13 @@ def run_eval(run_dir: str) -> Dict[str, float]:
             r_cpu = decoded["r"].cpu() # 0..1
             a_cpu = decoded["a"].cpu() # 0..1
             
+            ir_paths = batch.get("ir_path")
             for k in range(b_size):
                 idx = sample_index + k
-                base_name = f"sample_{idx:06d}"
+                if ir_paths is not None:
+                    base_name = os.path.splitext(os.path.basename(ir_paths[k]))[0]
+                else:
+                    base_name = f"sample_{idx:06d}"
                 
                 # Save composite grid
                 # Row: Input, Recon, T, R, A

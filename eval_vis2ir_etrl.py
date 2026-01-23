@@ -114,8 +114,14 @@ def run_eval(run_dir: str) -> Dict[str, float]:
                 peak_mb = peak_bytes / (1024**2)
 
             pred_cpu = pred_ir.cpu()
+            path_list = batch.get("ir_path")
+            if path_list is None:
+                path_list = batch.get("vis_path")
             for i in range(b_size):
-                filename = f"sample_{sample_index:06d}.png"
+                if path_list is not None:
+                    filename = os.path.basename(path_list[i])
+                else:
+                    filename = f"sample_{sample_index:06d}.png"
                 tensor_to_pil(pred_cpu[i], mode="L").save(os.path.join(sampling_dir, filename))
                 sample_rows.append({
                     "index": sample_index,
