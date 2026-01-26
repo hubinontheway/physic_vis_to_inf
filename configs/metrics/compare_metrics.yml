@@ -1,0 +1,12 @@
+# Example config for compare_metrics.py
+# Use absolute paths or relative paths (relative to this file).
+real: /path/to/real.png
+preds:
+  - /path/to/pred1.png
+  - /path/to/pred2.png
+# device: cpu | cuda | cuda:0
+device: cuda
+# resize: true will resize preds to match the real image size.
+resize: true
+# Optional CSV output path (relative to this file if not absolute).
+csv: metrics.csv
