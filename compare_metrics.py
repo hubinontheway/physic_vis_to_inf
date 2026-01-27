@@ -41,7 +41,24 @@ def _pil_to_tensor(image) -> torch.Tensor:
         )
         return tensor.unsqueeze(0) / 255.0
 
-    array = np.array(image, dtype="float32")
+    try:
+        image.load()
+    except Exception:
+        pass
+    try:
+        array = np.array(image, dtype="float32")
+    except Exception:
+        data = list(image.getdata())
+        if image.mode == "RGB":
+            tensor = torch.tensor(data, dtype=torch.float32).view(
+                image.size[1], image.size[0], 3
+            )
+            tensor = tensor.permute(2, 0, 1)
+            return tensor / 255.0
+        tensor = torch.tensor(data, dtype=torch.float32).view(
+            image.size[1], image.size[0]
+        )
+        return tensor.unsqueeze(0) / 255.0
     if array.ndim == 2:
         return torch.from_numpy(array).unsqueeze(0) / 255.0
     if array.ndim == 3:
