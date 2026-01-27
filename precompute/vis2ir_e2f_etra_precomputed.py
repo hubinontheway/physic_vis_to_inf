@@ -5,6 +5,7 @@ from typing import Any, Dict
 import torch
 
 from models.vis2ir_e2f_etra_pl import Vis2IRE2FETRALightning
+from utils.flow_sampling import sample_ir
 from utils.metrics import psnr, ssim
 
 
