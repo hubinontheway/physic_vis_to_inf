@@ -26,6 +26,12 @@ DEFAULT_EXTS = {
 
 
 def _pil_to_tensor(image) -> torch.Tensor:
+    # Ensure the image buffer is in memory to avoid closed file handles.
+    try:
+        image = image.copy()
+    except Exception:
+        pass
+
     try:
         import numpy as np
     except ImportError:
@@ -43,10 +49,7 @@ def _pil_to_tensor(image) -> torch.Tensor:
 
     try:
         image.load()
-    except Exception:
-        pass
-    try:
-        array = np.array(image, dtype="float32")
+        array = np.asarray(image, dtype="float32")
     except Exception:
         data = list(image.getdata())
         if image.mode == "RGB":
@@ -59,6 +62,7 @@ def _pil_to_tensor(image) -> torch.Tensor:
             image.size[1], image.size[0]
         )
         return tensor.unsqueeze(0) / 255.0
+
     if array.ndim == 2:
         return torch.from_numpy(array).unsqueeze(0) / 255.0
     if array.ndim == 3:
@@ -86,7 +90,17 @@ def _load_image(path: str) -> torch.Tensor:
     if isinstance(data, torch.Tensor):
         tensor = data
     else:
-        tensor = _pil_to_tensor(data)
+        try:
+            data.load()
+            tensor = _pil_to_tensor(data)
+        except Exception:
+            try:
+                from PIL import Image
+            except ImportError as exc:
+                raise ImportError("Pillow is required to load image files") from exc
+            # Re-open to avoid closed file handles from context managers.
+            with Image.open(path) as img:
+                tensor = _pil_to_tensor(img.convert(img.mode))
     if tensor.dim() == 4:
         if tensor.shape[0] != 1:
             raise ValueError(f"Expected a single image in {path}")
