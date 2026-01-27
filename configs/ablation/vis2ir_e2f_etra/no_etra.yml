@@ -15,14 +15,14 @@ best_metric: psnr
 best_metric_mode: max
 max_checkpoints: 5
 
-dataset: VEDIA
+dataset: AVIID
 split: train
 data_root: /data2/hubin/datasets
 seed: 123
 device: cuda:5
 
 etrl:
-  checkpoint: runs/vis2ir_etrl/version_3/checkpoints/last.ckpt
+  checkpoint: runs/vis2ir_etrl_AVIID/version_0/checkpoints/last.ckpt
 
 etra:
   enabled: false
@@ -81,6 +81,6 @@ ablation:
   etrl_trainable: false
 
 precompute:
-  ir0_root: /path/to/ir0
+  ir0_root: /data1/hubin/AlignIR/precompute/ir0/AVIID
   use_split_subdir: true
-  use_only: false
+  use_only: true

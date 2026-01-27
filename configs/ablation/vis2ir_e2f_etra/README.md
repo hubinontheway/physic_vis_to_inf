@@ -55,3 +55,20 @@ precompute:
 - 作用：端到端微调 ETRL。
 - 相对 baseline：`ablation.etrl_trainable: true`，设置 `ablation.etrl_lr`。
 - 相对最终方法：ETRL 由冻结改为可训练。
+
+---
+
+## 消融实验表（论文用）
+
+| 编号 | 配置文件 | 实验目的 | 相对 Baseline 改动 | 相对最终方法改动 | 预计算 IR0 | 备注 |
+|---|---|---|---|---|---|---|
+| A0 | baseline.yml | 基线参考 | 无 | 无 | 是 | 最终方法 |
+| A1 | no_etra.yml | 去除 ETRA 引导 | `etra.enabled=false`，`etra.loss_weight=0.0` | 去除 ETRA 引导 | 是 |  |
+| A2 | etra_w01.yml | 低权重 ETRA 引导 | `etra.loss_weight=0.1` | 调整 ETRA 权重 | 是 |  |
+| A3 | etra_w05.yml | 中权重 ETRA 引导 | `etra.loss_weight=0.5` | 调整 ETRA 权重 | 是 |  |
+| A4 | etra_w10.yml | 高权重 ETRA 引导 | `etra.loss_weight=1.0` | 调整 ETRA 权重 | 是 |  |
+| B1 | etrl_zero.yml | 去除 ETRL（零 IR0） | `ablation.etrl_mode=zero` | IR0 置零 | 否 |  |
+| B2 | etrl_noise.yml | 去除 ETRL（噪声 IR0） | `ablation.etrl_mode=noise` | IR0 为噪声 | 否 |  |
+| B3 | etrl_constant.yml | 去除 ETRL（常数 IR0） | `ablation.etrl_mode=constant` | IR0 为常数 | 否 |  |
+| B4 | etrl_gt.yml | 上界（Oracle IR0） | `ablation.etrl_mode=gt` | IR0 为 GT | 否 | 仅作上界 |
+| C1 | etrl_trainable.yml | 端到端微调 ETRL | `ablation.etrl_trainable=true` | ETRL 可训练 | 是 |  |
