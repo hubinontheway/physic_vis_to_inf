@@ -6,7 +6,6 @@ from typing import Dict
 
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
 
 from datasets import create_dataset
 from models.vis2ir_etrl_pl import Vis2IRETRLPlModule
@@ -63,13 +62,17 @@ def _ensure_vis_channels(tensor: torch.Tensor) -> torch.Tensor:
 
 def _load_vis(path: str, image_size: int) -> torch.Tensor:
     data = load_tensor_or_pil(path, mode="RGB")
+    return _to_vis_tensor(data, image_size, source=path)
+
+
+def _to_vis_tensor(data, image_size: int, source: str = "") -> torch.Tensor:
     if isinstance(data, torch.Tensor):
         tensor = data
     else:
         tensor = _pil_to_tensor(data)
     if tensor.dim() == 4:
         if tensor.shape[0] != 1:
-            raise ValueError(f"Expected a single image in {path}")
+            raise ValueError(f"Expected a single image in {source}")
         tensor = tensor.squeeze(0)
     if tensor.dim() == 2:
         tensor = tensor.unsqueeze(0)
@@ -83,6 +86,16 @@ def _load_vis(path: str, image_size: int) -> torch.Tensor:
             align_corners=False,
         ).squeeze(0)
     return tensor
+
+
+def _vis_from_sample(sample, image_size: int) -> torch.Tensor:
+    vis = sample.get("vis")
+    if vis is None:
+        vis_path = sample.get("vis_path")
+        if not vis_path:
+            raise ValueError("Sample must provide 'vis' or 'vis_path'")
+        return _load_vis(vis_path, image_size)
+    return _to_vis_tensor(vis, image_size)
 
 
 def _resolve_output_dir(base_dir: str, split: str, use_split_subdir: bool) -> str:
@@ -131,8 +144,6 @@ def main():
         vis_mode="RGB",
         ir_mode="L",
     )
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=4)
-
     output_dir = args.output_dir or precompute_cfg.get("output_dir")
     if not output_dir:
         raise ValueError("output_dir must be provided via --output-dir or precompute.output_dir")
@@ -141,21 +152,18 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
 
     with torch.no_grad():
-        for batch in loader:
-            vis_paths = batch.get("vis_path")
-            ir_paths = batch.get("ir_path")
-            if vis_paths is None:
-                raise ValueError("Dataset must provide vis_path for preprocessing")
-            vis_batch = []
-            for path in vis_paths:
-                vis_tensor = _load_vis(path, image_size)
-                vis_batch.append(vis_tensor)
+        total = len(dataset)
+        for start in range(0, total, batch_size):
+            samples = [dataset[i] for i in range(start, min(start + batch_size, total))]
+            if not samples:
+                continue
+            vis_batch = [_vis_from_sample(sample, image_size) for sample in samples]
             vis = torch.stack(vis_batch, dim=0).to(device)
             pred_ir = pl_model(vis).clamp(0.0, 1.0).cpu()
-            for i, path in enumerate(vis_paths):
-                name_source = path
-                if ir_paths is not None:
-                    name_source = ir_paths[i]
+            for i, sample in enumerate(samples):
+                name_source = sample.get("ir_path") or sample.get("vis_path")
+                if not name_source:
+                    raise ValueError("Sample must provide ir_path or vis_path")
                 filename = os.path.basename(name_source)
                 out_path = os.path.join(output_dir, filename)
                 tensor_to_pil(pred_ir[i], mode="L").save(out_path)
