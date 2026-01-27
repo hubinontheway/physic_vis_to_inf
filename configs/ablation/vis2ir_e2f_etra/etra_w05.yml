@@ -1,0 +1,81 @@
+lr: 0.0002
+batch_size: 8
+image_size: 256
+steps: 200000
+eval_interval: 5000
+vis_interval: 5000
+lr_schedule:
+  type: cosine
+  warmup_steps: 1000
+  min_lr: 0.00001
+
+eval_split: test
+eval_batch_size: 4
+best_metric: psnr
+best_metric_mode: max
+max_checkpoints: 5
+
+dataset: VEDIA
+split: train
+data_root: /data2/hubin/datasets
+seed: 123
+device: cuda:5
+
+etrl:
+  checkpoint: runs/vis2ir_etrl/version_3/checkpoints/last.ckpt
+
+etra:
+  enabled: true
+  checkpoint: runs/etra_flat/version_1/checkpoints/last.ckpt
+  loss_weight: 0.5
+  model_params:
+    smp_model: UnetPlusPlus
+    encoder_name: efficientnet-b5
+    encoder_weights: imagenet
+    in_channels: 1
+    out_channels: 5
+    base_learning_rate: 1.0e-4
+    weight_decay: 1.0e-4
+    lowpass_kernel: 16
+    input_range: zero_one
+    loss_weights:
+      rec: 1.0
+      ssim: 0.2
+      tv_low: 0.5
+      tv_eps: 0.1
+      edge: 0.2
+      prior: 0.05
+
+flow_model:
+  block_out_channels: [64, 128, 256, 512]
+  down_block_types:
+    - "DownBlock2D"
+    - "DownBlock2D"
+    - "AttnDownBlock2D"
+    - "AttnDownBlock2D"
+  up_block_types:
+    - "AttnUpBlock2D"
+    - "AttnUpBlock2D"
+    - "UpBlock2D"
+    - "UpBlock2D"
+  layers_per_block: 2
+  attention_head_dim: 64
+  dropout: 0.1
+  act_fn: "silu"
+  center_input_sample: false
+
+flow_sampling:
+  method: euler
+  steps: 50
+  atol: 0.00001
+  rtol: 0.00001
+
+etra_sampling:
+  method: euler
+  steps: 20
+  atol: 0.00001
+  rtol: 0.00001
+
+ablation:
+  etrl_mode: default
+  etrl_trainable: false
