@@ -1,0 +1,15 @@
+dataset: M3FD_Detection
+split: train
+image_size: 256
+batch_size: 8
+data_root: /data2/hubin/datasets
+device: cuda:5
+
+etrl:
+  checkpoint: runs/vis2ir_etrl_M3FD/version_0/checkpoints/last.ckpt
+
+precompute:
+  output_dir: /data2/hubin/precompute/ir0/M3FD
+  split: train
+  batch_size: 8
+  use_split_subdir: true

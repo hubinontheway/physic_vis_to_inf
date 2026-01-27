@@ -94,7 +94,7 @@ def _resolve_output_dir(base_dir: str, split: str, use_split_subdir: bool) -> st
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/flow/vis2ir_e2f_etra.yml")
-    parser.add_argument("--output-dir", required=True, help="Directory to save precomputed IR0 images.")
+    parser.add_argument("--output-dir", help="Directory to save precomputed IR0 images.")
     parser.add_argument("--split", default=None, help="Dataset split to process (train/test).")
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--use-split-subdir", action="store_true", help="Save under output/split/")
@@ -108,8 +108,9 @@ def main():
     dataset_name = str(config.get("dataset", "VEDIA"))
     data_root = str(config.get("data_root", "/data2/hubin/datasets"))
     dataset_root = str(config.get("dataset_root", os.path.join(data_root, dataset_name)))
-    split = args.split or str(config.get("split", "train"))
-    batch_size = args.batch_size or int(config.get("batch_size", 1))
+    precompute_cfg = config.get("precompute", {}) or {}
+    split = args.split or str(precompute_cfg.get("split", config.get("split", "train")))
+    batch_size = args.batch_size or int(precompute_cfg.get("batch_size", config.get("batch_size", 1)))
 
     etrl_cfg: Dict[str, object] = config.get("etrl", {}) or {}
     etrl_checkpoint = etrl_cfg.get("checkpoint")
@@ -132,7 +133,11 @@ def main():
     )
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=4)
 
-    output_dir = _resolve_output_dir(args.output_dir, split, args.use_split_subdir)
+    output_dir = args.output_dir or precompute_cfg.get("output_dir")
+    if not output_dir:
+        raise ValueError("output_dir must be provided via --output-dir or precompute.output_dir")
+    use_split_subdir = args.use_split_subdir or bool(precompute_cfg.get("use_split_subdir", False))
+    output_dir = _resolve_output_dir(str(output_dir), split, use_split_subdir)
     os.makedirs(output_dir, exist_ok=True)
 
     with torch.no_grad():
