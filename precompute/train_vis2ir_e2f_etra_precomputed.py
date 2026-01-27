@@ -10,9 +10,9 @@ from pytorch_lightning.callbacks import Callback, LearningRateMonitor, ModelChec
 from pytorch_lightning.loggers import TensorBoardLogger
 from torch.utils.data import DataLoader
 
-from ablation.vis2ir_e2f_etra_ablation import Vis2IRE2FETRAAblation
 from datasets import create_dataset
 from datasets.precomputed import PrecomputedIR0Dataset
+from precompute.vis2ir_e2f_etra_precomputed import Vis2IRE2FETRAPrecomputed
 from utils.config import load_yaml
 from utils.flow_sampling import sample_ir
 from utils.vision import load_tensor_or_pil, paired_transform
@@ -37,11 +37,10 @@ class ImageLogger(Callback):
         ir = self.val_ir.to(pl_module.device)
 
         with torch.no_grad():
-            if hasattr(pl_module, "_get_ir0"):
-                batch = {"ir0": self.val_ir0} if self.val_ir0 is not None else None
-                ir0 = pl_module._get_ir0(vis, ir, batch=batch)
+            if self.val_ir0 is not None:
+                ir0 = self.val_ir0.to(pl_module.device)
             else:
-                ir0 = pl_module._etrl_forward(vis)
+                ir0 = pl_module._get_ir0({"vis": vis}, vis)
             sampling_cfg = pl_module.config.get("flow_sampling", {}) or {}
             pred_ir = sample_ir(
                 pl_module.solver,
@@ -134,16 +133,10 @@ def main():
         pin_memory=True,
     )
 
-    model = Vis2IRE2FETRAAblation(config=config)
+    model = Vis2IRE2FETRAPrecomputed(config=config)
 
     config_name = os.path.splitext(os.path.basename(args.config))[0]
-    ablation_cfg = config.get("ablation", {}) or {}
-    etrl_mode = str(ablation_cfg.get("etrl_mode", "default")).lower()
-    if etrl_mode in {"gt", "oracle"}:
-        logger_name = f"ablation_oracle_{config_name}"
-    else:
-        logger_name = f"ablation_{config_name}"
-    logger = TensorBoardLogger("runs", name=logger_name)
+    logger = TensorBoardLogger("runs", name=f"precompute_{config_name}")
 
     best_metric = str(config.get("best_metric", "psnr"))
     best_metric_mode = str(config.get("best_metric_mode", "max"))

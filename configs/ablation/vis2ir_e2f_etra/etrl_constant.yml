@@ -79,3 +79,8 @@ etra_sampling:
 ablation:
   etrl_mode: constant
   etrl_constant: 0.5
+
+precompute:
+  ir0_root: /path/to/ir0
+  use_split_subdir: true
+  use_only: false

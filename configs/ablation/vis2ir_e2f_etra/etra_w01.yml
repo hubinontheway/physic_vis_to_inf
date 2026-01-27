@@ -79,3 +79,8 @@ etra_sampling:
 ablation:
   etrl_mode: default
   etrl_trainable: false
+
+precompute:
+  ir0_root: /path/to/ir0
+  use_split_subdir: true
+  use_only: false

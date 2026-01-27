@@ -14,6 +14,8 @@ from utils.metrics import psnr, ssim
 class Vis2IRE2FETRAAblation(Vis2IRE2FETRALightning):
     def __init__(self, config: Dict[str, Any]):
         self.ablation = config.get("ablation", {}) or {}
+        self.precompute = config.get("precompute", {}) or {}
+        self.precompute_use_only = bool(self.precompute.get("use_only", False))
         self.etrl_mode = str(self.ablation.get("etrl_mode", "default")).lower()
         if self.etrl_mode in {"etrl", "baseline"}:
             self.etrl_mode = "default"
@@ -22,12 +24,16 @@ class Vis2IRE2FETRAAblation(Vis2IRE2FETRALightning):
         self.etrl_noise_mean = float(self.ablation.get("etrl_noise_mean", 0.5))
         self.etrl_constant = float(self.ablation.get("etrl_constant", 0.0))
         self.is_oracle = self.etrl_mode == "gt"
+        if self.precompute_use_only:
+            self.etrl_trainable = False
         if self.etrl_mode != "default":
             self.etrl_trainable = False
         super().__init__(config)
 
     def _load_etrl(self, etrl_cfg: Dict[str, Any]):
         if self.etrl_mode != "default":
+            return None
+        if self.precompute_use_only:
             return None
         etrl = super()._load_etrl(etrl_cfg)
         if self.etrl_trainable:
@@ -47,7 +53,7 @@ class Vis2IRE2FETRAAblation(Vis2IRE2FETRALightning):
             pred = self.etrl(vis).clamp(0.0, 1.0)
         return pred
 
-    def _get_ir0(self, vis: torch.Tensor, ir: torch.Tensor) -> torch.Tensor:
+    def _get_ir0(self, vis: torch.Tensor, ir: torch.Tensor, batch=None) -> torch.Tensor:
         if self.etrl_mode == "gt":
             return ir
         if self.etrl_mode == "zero":
@@ -57,11 +63,17 @@ class Vis2IRE2FETRAAblation(Vis2IRE2FETRALightning):
             return noise.clamp(0.0, 1.0)
         if self.etrl_mode == "constant":
             return torch.full_like(ir, self.etrl_constant).clamp(0.0, 1.0)
+        if batch is not None and "ir0" in batch:
+            ir0 = batch["ir0"]
+            if isinstance(ir0, torch.Tensor):
+                return ir0.to(vis.device)
+        if self.precompute_use_only:
+            raise ValueError("precompute.use_only=true but batch has no ir0")
         return self._etrl_forward(vis)
 
     def training_step(self, batch, batch_idx):
         vis, ir = batch["vis"], batch["ir"]
-        ir0 = self._get_ir0(vis, ir)
+        ir0 = self._get_ir0(vis, ir, batch=batch)
 
         self.log("ablation/is_oracle", float(self.is_oracle), on_step=False, on_epoch=True)
 
@@ -88,7 +100,7 @@ class Vis2IRE2FETRAAblation(Vis2IRE2FETRALightning):
 
     def validation_step(self, batch, batch_idx):
         vis, ir = batch["vis"], batch["ir"]
-        ir0 = self._get_ir0(vis, ir)
+        ir0 = self._get_ir0(vis, ir, batch=batch)
         sampling_cfg = self._resolve_sampling_cfg(self.config, for_etra=False)
         pred_ir = sample_ir(self.solver, cond=None, sampling_cfg=sampling_cfg, x_init=ir0)
         pred_ir = pred_ir.clamp(0.0, 1.0)

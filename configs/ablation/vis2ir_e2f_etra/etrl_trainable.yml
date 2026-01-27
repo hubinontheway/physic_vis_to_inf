@@ -80,3 +80,8 @@ ablation:
   etrl_mode: default
   etrl_trainable: true
   etrl_lr: 0.00001
+
+precompute:
+  ir0_root: /path/to/ir0
+  use_split_subdir: true
+  use_only: false

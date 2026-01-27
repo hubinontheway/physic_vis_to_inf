@@ -9,9 +9,9 @@ from typing import Dict
 import torch
 from torch.utils.data import DataLoader
 
-from ablation.vis2ir_e2f_etra_ablation import Vis2IRE2FETRAAblation
 from datasets import create_dataset
 from datasets.precomputed import PrecomputedIR0Dataset
+from precompute.vis2ir_e2f_etra_precomputed import Vis2IRE2FETRAPrecomputed
 from utils.config import load_yaml
 from utils.device import resolve_device
 from utils.flow_sampling import sample_ir
@@ -82,7 +82,7 @@ def run_eval(run_dir: str) -> Dict[str, float]:
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, drop_last=False, num_workers=4)
 
     checkpoint_path = find_best_checkpoint(run_dir)
-    pl_model = Vis2IRE2FETRAAblation.load_from_checkpoint(
+    pl_model = Vis2IRE2FETRAPrecomputed.load_from_checkpoint(
         checkpoint_path,
         config=config,
         map_location=device,
@@ -111,10 +111,7 @@ def run_eval(run_dir: str) -> Dict[str, float]:
                 torch.cuda.reset_peak_memory_stats(device)
 
             start_time = time.perf_counter()
-            if hasattr(pl_model, "_get_ir0"):
-                ir0 = pl_model._get_ir0(vis, ir, batch=batch)
-            else:
-                ir0 = pl_model._etrl_forward(vis)
+            ir0 = pl_model._get_ir0(batch, vis)
             pred_ir = sample_ir(
                 pl_model.solver,
                 cond=None,

@@ -80,3 +80,8 @@ ablation:
   etrl_mode: noise
   etrl_noise_std: 0.1
   etrl_noise_mean: 0.5
+
+precompute:
+  ir0_root: /path/to/ir0
+  use_split_subdir: true
+  use_only: false
