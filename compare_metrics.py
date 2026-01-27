@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from typing import Dict, List, Sequence
+from typing import Dict, List, Sequence, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -11,6 +11,17 @@ import torch.nn.functional as F
 from utils.metrics import PerceptualMetrics, psnr, ssim
 from utils.config import load_yaml
 from utils.vision import load_tensor_or_pil
+
+DEFAULT_EXTS = {
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".bmp",
+    ".tif",
+    ".tiff",
+    ".webp",
+    ".pt",
+}
 
 
 def _pil_to_tensor(image) -> torch.Tensor:
@@ -115,7 +126,7 @@ def _format_metrics(metrics: Dict[str, float]) -> str:
 def _write_csv(rows: List[Dict[str, float]], path: str) -> None:
     import csv
 
-    fieldnames = ["path", "psnr", "ssim", "lpips", "fid", "kid", "kid_std"]
+    fieldnames = ["real", "pred", "count", "psnr", "ssim", "lpips", "fid", "kid", "kid_std"]
     with open(path, "w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
@@ -153,6 +164,34 @@ def _resolve_path(path: str, base_dir: str) -> str:
 
 def _resolve_paths(paths: Sequence[str], base_dir: str) -> List[str]:
     return [_resolve_path(path, base_dir) for path in paths]
+
+
+def _list_dir_files(root: Path) -> List[Path]:
+    return sorted(
+        [p for p in root.iterdir() if p.is_file() and p.suffix.lower() in DEFAULT_EXTS],
+        key=lambda p: p.name,
+    )
+
+
+def _build_pairs(real_path: Path, pred_path: Path) -> Tuple[List[Tuple[Path, Path]], str]:
+    real_is_dir = real_path.is_dir()
+    pred_is_dir = pred_path.is_dir()
+
+    if real_is_dir and not pred_is_dir:
+        raise ValueError("real is a directory, pred must also be a directory")
+
+    if real_is_dir and pred_is_dir:
+        real_files = {p.name: p for p in _list_dir_files(real_path)}
+        pred_files = _list_dir_files(pred_path)
+        pairs = [(real_files[p.name], p) for p in pred_files if p.name in real_files]
+        return pairs, "dir-dir"
+
+    if (not real_is_dir) and pred_is_dir:
+        pred_files = _list_dir_files(pred_path)
+        pairs = [(real_path, p) for p in pred_files]
+        return pairs, "file-dir"
+
+    return [(real_path, pred_path)], "file-file"
 
 
 def main() -> None:
@@ -213,49 +252,70 @@ def main() -> None:
         )
     )
 
-    real = _load_image(real_path)
-    real_channels = int(real.shape[0])
-    real_size = (int(real.shape[1]), int(real.shape[2]))
-    real = real.to(device)
+    real_path_obj = Path(real_path)
+    if not real_path_obj.exists():
+        raise FileNotFoundError(f"real path not found: {real_path_obj}")
 
-    perceptual = PerceptualMetrics.create(device, dataset_size=1)
     rows: List[Dict[str, float]] = []
 
     for pred_path in preds_list:
-        pred = _load_image(pred_path)
-        pred = _match_channels(pred, real_channels)
-        if not no_resize:
-            pred = _resize_to(pred, real_size)
-        elif pred.shape[-2:] != real_size:
-            raise ValueError(
-                f"Size mismatch for {pred_path}: {pred.shape[-2:]} vs {real_size}"
-            )
+        pred_path_obj = Path(pred_path)
+        if not pred_path_obj.exists():
+            raise FileNotFoundError(f"pred path not found: {pred_path_obj}")
+
+        pairs, mode = _build_pairs(real_path_obj, pred_path_obj)
+        if not pairs:
+            print(f"warning: no matching files for {pred_path_obj}", file=sys.stderr)
+            continue
+
+        real_first = _load_image(str(pairs[0][0]))
+        real_channels = int(real_first.shape[0])
+        real_size = (int(real_first.shape[1]), int(real_first.shape[2]))
+
+        perceptual = PerceptualMetrics.create(device, dataset_size=len(pairs))
+        psnr_sum = 0.0
+        ssim_sum = 0.0
 
         with torch.no_grad():
-            pred_b = pred.unsqueeze(0).to(device)
-            real_b = real.unsqueeze(0)
-            psnr_val = float(psnr(pred_b, real_b).item())
-            ssim_val = float(ssim(pred_b, real_b).item())
+            for real_file, pred_file in pairs:
+                real = _load_image(str(real_file))
+                pred = _load_image(str(pred_file))
+                real = _match_channels(real, real_channels)
+                pred = _match_channels(pred, real_channels)
+                if not no_resize:
+                    real = _resize_to(real, real_size)
+                    pred = _resize_to(pred, real_size)
+                elif pred.shape[-2:] != real.shape[-2:]:
+                    raise ValueError(
+                        f"Size mismatch for {pred_file}: {pred.shape[-2:]} vs {real.shape[-2:]}"
+                    )
 
-            _reset_perceptual(perceptual)
-            try:
-                perceptual.update(pred_b, real_b)
-                per_metrics = perceptual.compute()
-            except RuntimeError as exc:
-                print(f"warning: perceptual metrics failed for {pred_path}: {exc}", file=sys.stderr)
-                per_metrics = {"fid": float("nan"), "kid": float("nan"), "lpips": float("nan")}
+                pred_b = pred.unsqueeze(0).to(device)
+                real_b = real.unsqueeze(0).to(device)
+                psnr_sum += float(psnr(pred_b, real_b).item())
+                ssim_sum += float(ssim(pred_b, real_b).item())
+                try:
+                    perceptual.update(pred_b, real_b)
+                except RuntimeError as exc:
+                    print(f"warning: perceptual metrics failed for {pred_file}: {exc}", file=sys.stderr)
 
+            per_metrics = perceptual.compute()
+
+        count = len(pairs)
         row = {
-            "path": pred_path,
-            "psnr": psnr_val,
-            "ssim": ssim_val,
+            "real": str(real_path_obj),
+            "pred": str(pred_path_obj),
+            "count": count,
+            "psnr": psnr_sum / max(count, 1),
+            "ssim": ssim_sum / max(count, 1),
             "lpips": per_metrics["lpips"],
             "fid": per_metrics["fid"],
             "kid": per_metrics["kid"],
             "kid_std": per_metrics.get("kid_std", float("nan")),
         }
         rows.append(row)
-        print(f"{pred_path} {_format_metrics(row)}")
+        suffix = f" count={count} mode={mode}" if count > 1 else ""
+        print(f"{pred_path_obj} {_format_metrics(row)}{suffix}")
 
     if csv_path:
         _write_csv(rows, csv_path)
