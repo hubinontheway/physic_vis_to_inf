@@ -148,6 +148,20 @@ class Vis2IRE2FETRALightning(pl.LightningModule):
         loss, loss_dict = self.etra._compute_losses(i_hat, pred, decoded, tau_low, a_low, r_low)
         return loss, loss_dict
 
+    def _etra_guidance_pred_ir(self, ir0: torch.Tensor) -> torch.Tensor:
+        etra_cfg = self.config.get("etra", {}) or {}
+        mode = str(etra_cfg.get("guidance_mode", "sample")).lower()
+        if mode in {"sample", "sampling"}:
+            sampling_cfg = self._resolve_sampling_cfg(self.config, for_etra=True)
+            pred_ir = sample_ir(self.solver, cond=None, sampling_cfg=sampling_cfg, x_init=ir0)
+            return pred_ir.clamp(0.0, 1.0)
+        if mode in {"one_step", "onestep", "euler"}:
+            t = torch.zeros(ir0.shape[0], device=ir0.device)
+            pred_dx = self(ir0, t)
+            pred_ir = ir0 + pred_dx
+            return pred_ir.clamp(0.0, 1.0)
+        raise ValueError(f"Unknown etra.guidance_mode: {mode}")
+
     def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         return self.model(x, t)
 
@@ -164,9 +178,7 @@ class Vis2IRE2FETRALightning(pl.LightningModule):
         self.log("train/flow_loss", flow_loss, prog_bar=True, on_step=True, on_epoch=True)
 
         if self.etra is not None and self.etra_loss_weight > 0:
-            sampling_cfg = self._resolve_sampling_cfg(self.config, for_etra=True)
-            pred_ir = sample_ir(self.solver, cond=None, sampling_cfg=sampling_cfg, x_init=ir0)
-            pred_ir = pred_ir.clamp(0.0, 1.0)
+            pred_ir = self._etra_guidance_pred_ir(ir0)
             etra_loss, etra_logs = self._etra_guidance_loss(pred_ir)
             loss = loss + self.etra_loss_weight * etra_loss
             self.log("train/etra_loss", etra_loss, on_step=True, on_epoch=True)

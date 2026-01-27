@@ -7,7 +7,6 @@ import torch.nn.functional as F
 from torch.optim import Adam
 
 from models.vis2ir_e2f_etra_pl import Vis2IRE2FETRALightning
-from utils.flow_sampling import sample_ir
 from utils.metrics import psnr, ssim
 
 
@@ -86,9 +85,7 @@ class Vis2IRE2FETRAAblation(Vis2IRE2FETRALightning):
         self.log("train/flow_loss", flow_loss, prog_bar=True, on_step=True, on_epoch=True)
 
         if self.etra is not None and self.etra_loss_weight > 0:
-            sampling_cfg = self._resolve_sampling_cfg(self.config, for_etra=True)
-            pred_ir = sample_ir(self.solver, cond=None, sampling_cfg=sampling_cfg, x_init=ir0)
-            pred_ir = pred_ir.clamp(0.0, 1.0)
+            pred_ir = self._etra_guidance_pred_ir(ir0)
             etra_loss, etra_logs = self._etra_guidance_loss(pred_ir)
             loss = loss + self.etra_loss_weight * etra_loss
             self.log("train/etra_loss", etra_loss, on_step=True, on_epoch=True)

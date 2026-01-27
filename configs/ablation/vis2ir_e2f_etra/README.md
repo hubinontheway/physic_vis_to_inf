@@ -15,6 +15,12 @@ precompute:
   use_only: false
 ```
 
+为加速训练，ETRA 引导默认使用一步预测（不做多步采样）：
+```
+etra:
+  guidance_mode: one_step   # 可选 sample / one_step
+```
+
 ## baseline.yml
 - 作用：参考基线配置。
 - 相对 baseline：无变化。

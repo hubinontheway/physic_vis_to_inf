@@ -28,6 +28,7 @@ etra:
   enabled: true
   checkpoint: runs/etra_flat/version_1/checkpoints/last.ckpt
   loss_weight: 0.1
+  guidance_mode: one_step
   model_params:
     smp_model: UnetPlusPlus
     encoder_name: efficientnet-b5
