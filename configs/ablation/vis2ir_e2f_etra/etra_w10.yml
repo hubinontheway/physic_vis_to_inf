@@ -19,7 +19,7 @@ dataset: AVIID
 split: train
 data_root: /data2/hubin/datasets
 seed: 123
-device: cuda:5
+device: cuda:1
 
 etrl:
   checkpoint: runs/vis2ir_etrl_AVIID/version_0/checkpoints/last.ckpt

@@ -9,7 +9,7 @@ etrl:
   checkpoint: runs/vis2ir_etrl/version_3/checkpoints/last.ckpt
 
 precompute:
-  output_dir: /data2/hubin/precompute/ir0/VEDIA
+  output_dir: /data1/hubin/AlignIR/precompute/ir0/VEDIA
   split: train
   batch_size: 8
   use_split_subdir: true

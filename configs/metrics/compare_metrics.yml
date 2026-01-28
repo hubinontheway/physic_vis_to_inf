@@ -1,11 +1,16 @@
 # Example config for compare_metrics.py
 # Use absolute paths or relative paths (relative to this file).
-real: /path/to/real.png
+real: /data1/hubin/AlignIR/other_experiment_results/vedai/testA
 preds:
-  - /path/to/pred1.png
-  - /path/to/pred2.png
+  - /data1/hubin/AlignIR/other_experiment_results/cm-diff/vedai/t2v
+  - /data1/hubin/AlignIR/other_experiment_results/cut/vedai/t2v
+  - /data1/hubin/AlignIR/other_experiment_results/dclgan/vedai/fake_A
+  - /data1/hubin/AlignIR/other_experiment_results/munit/vedai/t2v
+  - /data1/hubin/AlignIR/other_experiment_results/roma/vedai/t2v
+  - /data1/hubin/AlignIR/other_experiment_results/unit/vedai/t2v
+  - /data1/hubin/AlignIR/other_experiment_results/i2v/vedai/fakeA
 # device: cpu | cuda | cuda:0
-device: cuda
+device: cuda:3
 # resize: true will resize preds to match the real image size.
 resize: true
 # Optional CSV output path (relative to this file if not absolute).
