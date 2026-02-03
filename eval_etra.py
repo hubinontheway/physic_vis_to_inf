@@ -135,27 +135,21 @@ def run_eval(run_dir: str) -> Dict[str, float]:
             per_image = elapsed / max(b_size, 1)
 
             # Save Images
-            # We save: Input, Recon, Components
-            # Components: T, R, A, B, Eps, Tau
+            # We save: Recon (same name as input).
             
-            i_cpu = i.cpu()
             i_hat_cpu = i_hat.cpu()
-            t_cpu = pl_model._minmax_norm(decoded["t"]).cpu()
-            r_cpu = decoded["r"].cpu() # 0..1
-            a_cpu = decoded["a"].cpu() # 0..1
             
             ir_paths = batch.get("ir_path")
             for k in range(b_size):
                 idx = sample_index + k
                 if ir_paths is not None:
-                    base_name = os.path.splitext(os.path.basename(ir_paths[k]))[0]
+                    filename = os.path.basename(ir_paths[k])
                 else:
-                    base_name = f"sample_{idx:06d}"
+                    filename = f"sample_{idx:06d}.png"
+                base_name = os.path.splitext(filename)[0]
                 
-                # Save composite grid
-                # Row: Input, Recon, T, R, A
-                row = torch.cat([i_cpu[k], i_hat_cpu[k], t_cpu[k], r_cpu[k], a_cpu[k]], dim=2)
-                save_image(row, os.path.join(save_dir, f"{base_name}_grid.png"))
+                # Save reconstruction with the same filename as input
+                tensor_to_pil(i_hat_cpu[k], mode="L").save(os.path.join(save_dir, filename))
                 
                 # Compute per-sample metrics for CSV
                 p_val = psnr(i_hat[k:k+1], i[k:k+1]).item()
@@ -163,7 +157,7 @@ def run_eval(run_dir: str) -> Dict[str, float]:
                 
                 sample_rows.append({
                     "index": idx,
-                    "filename": f"{base_name}_grid.png",
+                    "filename": filename,
                     "psnr": p_val,
                     "ssim": s_val,
                     "inference_time": per_image
